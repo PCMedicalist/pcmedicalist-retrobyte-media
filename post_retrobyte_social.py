@@ -149,8 +149,8 @@ def title_to_theme(title):
     return t.replace("-", " ").strip()
 
 
-def generate_caption(title):
-    prompt = CAPTION_SYSTEM + "\n\n" + CAPTION_TASK.format(title=title)
+def generate_caption(theme):
+    prompt = CAPTION_SYSTEM + "\n\n" + CAPTION_TASK.format(title=theme)
     body = json.dumps({
         "model": MODEL,
         "prompt": prompt,
@@ -248,7 +248,7 @@ def main():
 
     print(f"[{args.slot}] video: {video}")
     print(f"[{args.slot}] media_url: {media_url}")
-    caption = generate_caption(video)
+    caption = generate_caption(theme)
     print(f"[{args.slot}] caption: {caption}")
 
     if args.dry_run:
