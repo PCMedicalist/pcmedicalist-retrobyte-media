@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import fcntl
 import urllib.request
 
 # ---------------------------------------------------------------------------
@@ -211,16 +212,30 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-def pick_video(state, force=None):
-    videos = list_videos()
-    if not videos:
-        raise RuntimeError(f"No videos found in {MEDIA_DIR}")
-    if force:
-        if force not in videos:
-            raise RuntimeError(f"--force-video {force} not found in {MEDIA_DIR}")
-        return force
-    idx = (state.get("last_index", -1) + 1) % len(videos)
-    return videos[idx]
+LOCK_FILE = STATE_FILE + ".lock"
+
+
+def reserve_video(force=None):
+    """Atomically pick the next rotation video and persist the index IMMEDIATELY
+    (before the slow caption generation), so concurrent runs can never select the
+    same clip. Uses an exclusive flock so two near-simultaneous cron runs serialize
+    cleanly and each reserve a distinct index."""
+    with open(LOCK_FILE, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        videos = list_videos()
+        if not videos:
+            raise RuntimeError(f"No videos found in {MEDIA_DIR}")
+        state = load_state()
+        if force:
+            if force not in videos:
+                raise RuntimeError(f"--force-video {force} not found in {MEDIA_DIR}")
+            idx = videos.index(force)
+        else:
+            idx = (state.get("last_index", -1) + 1) % len(videos)
+        video = videos[idx]
+        state["last_index"] = idx
+        save_state(state)  # reserve now, before any slow work
+        return video, idx
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +256,7 @@ def main():
         print(f"ERROR: BUFFER_ACCESS_TOKEN not found in {ENV_FILE}", file=sys.stderr)
         sys.exit(2)
 
-    state = load_state()
-    video = pick_video(state, force=args.force_video)
+    video, _ = reserve_video(force=args.force_video)
     theme = title_to_theme(video)
     media_url = f"{MEDIA_BASE_URL}/{video}"
 
@@ -253,9 +267,6 @@ def main():
 
     if args.dry_run:
         print(f"[{args.slot}] DRY-RUN: skipping Buffer. Would post to {CHANNEL_SERVICES}.")
-        # still advance rotation state so dry-runs don't collide with real runs
-        state["last_index"] = (state.get("last_index", -1) + 1) % max(len(list_videos()), 1)
-        save_state(state)
         return
 
     channels = get_channels(token)
@@ -273,9 +284,10 @@ def main():
             results[svc] = f"ERROR {res.get('message', res)}"
         print(f"[{args.slot}] {svc}: {results[svc]}")
 
-    # Advance rotation only after a successful at-least-one post
+    # Rotation index was already reserved atomically at pick time. Record history
+    # only after a successful post so we keep a per-clip audit trail.
     if any(v.startswith("OK") for v in results.values()):
-        state["last_index"] = (state.get("last_index", -1) + 1) % len(list_videos())
+        state = load_state()
         state.setdefault("history", []).append({
             "video": video, "caption": caption,
             "slot": args.slot, "ts": datetime.datetime.utcnow().isoformat() + "Z"
@@ -283,7 +295,7 @@ def main():
         save_state(state)
         print(f"[{args.slot}] rotation advanced; posted {video}")
     else:
-        print(f"[{args.slot}] NO successful posts — rotation NOT advanced", file=sys.stderr)
+        print(f"[{args.slot}] NO successful posts — video already reserved; rotation continues next run", file=sys.stderr)
         sys.exit(1)
 
 

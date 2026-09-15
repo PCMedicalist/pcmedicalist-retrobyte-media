@@ -1,23 +1,11 @@
 {
-  "last_index": 3,
+  "last_index": 2,
   "history": [
     {
-      "video": "retrobyte-baseline-base-intern.mp4",
-      "caption": "WAIT... LOOK WHAT I DISCOVERED! \ud83d\ude80 \"retrobyte-baseline-base-intern.mp4\" is a morning laugh fest - seeing that video brings a smile to my face every time. #RetroByte #MorningFun",
-      "slot": "morning",
-      "ts": "2026-09-15T04:30:01.794351Z"
-    },
-    {
       "video": "retrobyte-bonding-baseline.mp4",
-      "caption": "WAIT... 'bonding baseline' sounds like a discovery in itself, a funny morning when friends laugh so hard they bond over tech glitches. #RetroByte #FriendsAndTech",
+      "caption": "WAIT! 'Bonding Baseline' found me smiling & amazed at how tech connects us like never before. #RetroByte #TechCommunities",
       "slot": "morning",
-      "ts": "2026-09-15T04:41:09.934363Z"
-    },
-    {
-      "video": "retrobyte-cry-laughing.mp4",
-      "caption": "WAIT... HOLD ON... The 'cry laughing' video taught me that joy can be the loudest sound of all! #RetroByte #HappyDaysRetroByte",
-      "slot": "evening",
-      "ts": "2026-09-15T04:41:57.066087Z"
+      "ts": "2026-09-15T04:46:09.796593Z"
     }
   ]
 }
