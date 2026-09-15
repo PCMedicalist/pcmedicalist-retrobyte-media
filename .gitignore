@@ -1,0 +1,6 @@
+# Only media/ videos are allowed. Block everything else by default.
+*
+!.gitignore
+!README.md
+!media/
+!media/**
