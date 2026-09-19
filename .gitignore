@@ -10,3 +10,5 @@
 !retrobyte_scheduler.py
 !media/
 !media/**
+!.discovery_state.json
+

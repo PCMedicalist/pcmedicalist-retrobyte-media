@@ -39,22 +39,78 @@ OUTBOX = HERE / "generated"
 OUTBOX.mkdir(parents=True, exist_ok=True)
 READY_FILE = HERE / "_discovery_ready.json"
 
-# --- 90s-tech subject pool (rotating) ------------------------------------
-SUBJECTS = [
-    ("Game Boy", "the brick that made gaming pocket-sized"),
-    ("VHS tape", "the rewind war that ate your afternoon"),
-    ("Dial-up modem", "the scream that connected you to the world"),
-    ("Floppy disk", "1.44MB of pure possibility"),
-    ("Tamagotchi", "the pet that died if you forgot to feed it"),
-    ("CRT monitor", "the tube that glowed like the future"),
-    ("Cassette Walkman", "music in your pocket, no skip"),
-    ("Super Nintendo", "16-bit Saturdays forever"),
-    ("LaserDisc", "the disc before the disc"),
-    ("Pagers / Beepers", "the original notification dot"),
-    ("Polaroid camera", "instant memories, no darkroom"),
-    ("Arcade cabinet", "quarters, leaderboards, glory"),
+# --- Authoritative 90s-tech subject sequence (NO repeats) ----------------
+# The curated RetroByte "Discovering Old Tech" episode list lives in the
+# series bible the user authored. We parse the episode titles from there and
+# walk them in order, tracking the last-used episode in _discovery_state.json
+# so we NEVER post the same subject twice until the whole list has cycled.
+# (The old behaviour hashed the date over a 12-item arbitrary list and could
+# repeat / desync — replaced by this deterministic, deduped sequence.)
+SERIES_FILES = [
+    Path("/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/"
+         "RETROBYTE-OLD-TECH-DISCOVERY.md"),
+    HERE / "RETROBYTE OLD TECH DISCOVERY.md",  # sync copy fallback
 ]
-SUBJECTS_PER_DAY = 1  # one discovery video per run (2 runs/day)
+STATE_FILE = HERE / "_discovery_state.json"
+
+
+def load_episodes() -> list[tuple[str, str]]:
+    """Return [(title, slug), ...] parsed from the series bible, in order."""
+    text = ""
+    for sf in SERIES_FILES:
+        if sf.exists():
+            text = sf.read_text(encoding="utf-8", errors="ignore")
+            break
+    if not text:
+        # Hard fallback so the pipeline never hard-fails
+        return [("Floppy Disk", "the 1.44MB time capsule"),
+                ("Walkman", "music in your pocket"),
+                ("Rotary Phone", "the dial that rang")]
+    eps = []
+    for m in re.finditer(r"^#+\s*(\d{1,3})\s*[—-]\s*(.+)$", text, re.M):
+        title = m.group(2).strip()
+        eps.append((title, title))
+    # de-dup while preserving order
+    seen = set()
+    out = []
+    for t, s in eps:
+        if t.lower() in seen:
+            continue
+        seen.add(t.lower())
+        out.append((t, s))
+    return out or [("Floppy Disk", "the 1.44MB time capsule")]
+
+
+def next_episode(slot: int, force: str | None = None):
+    """Return (title, slug, index) for the next episode to post.
+
+    Walks the curated list in order; two slots/day = two consecutive episodes.
+    A persistent state file records the last-used index so we never repeat
+    until the list cycles. `--force-subject` overrides for debug but must
+    match a real episode (and still advances state consistently).
+    """
+    eps = load_episodes()
+    n = len(eps)
+    st = {}
+    if STATE_FILE.exists():
+        try:
+            st = json.loads(STATE_FILE.read_text())
+        except Exception:
+            st = {}
+    last = int(st.get("last_index", -1))
+    if force:
+        idx = next((i for i, (t, _s) in enumerate(eps)
+                    if t.lower() == force.lower()), None)
+        if idx is None:
+            eps.append((force, force))
+            idx = n
+            n += 1
+    else:
+        idx = (last + 1) % n
+    title, slug = eps[idx]
+    STATE_FILE.write_text(json.dumps({"last_index": idx, "episode": title,
+                                      "ts": _dt.datetime.utcnow().isoformat() + "Z"}))
+    return title, slug, idx
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "retrobyte:3b"
@@ -186,27 +242,22 @@ def build_video(narration: str, frame_path: Path, out_path: Path) -> str | None:
     return None
 
 
-def pick_subject(date: _dt.date, slot: int) -> tuple[str, str]:
-    idx = (int(date.strftime("%Y%m%d")) + slot * 1000) % len(SUBJECTS)
-    return SUBJECTS[idx]
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--slot", type=int, default=0, choices=[0, 1])
-    ap.add_argument("--force-subject", default=None, help="Override subject (debug)")
+    ap.add_argument("--force-subject", default=None,
+                    help="Force a specific episode title (debug). Must match a "
+                         "title in the series bible; advances state like normal.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    date = _dt.date.today()
-    if args.force_subject:
-        subj = next((s for s in SUBJECTS if s[0].lower() == args.force_subject.lower()),
-                    (args.force_subject, "a blast from the past"))
-    else:
-        subj = pick_subject(date, args.slot)
-    subject, hook = subj
+    # Walk the curated episode sequence in order (deduped, never repeats
+    # until the list cycles). --force-subject overrides for one-off debug.
+    subject, hook, ep_idx = next_episode(args.slot, args.force_subject)
+    print(f"[discovery-gen] episode#{ep_idx + 1} subject={subject} slot={args.slot}",
+          flush=True)
 
-    stamp = date.strftime("%Y-%m-%d") + f"-d{args.slot}"
+    stamp = _dt.date.today().strftime("%Y-%m-%d") + f"-d{args.slot}"
     frame = OUTBOX / f"disc_frame_{stamp}.png"
     video = OUTBOX / f"disc_video_{stamp}.mp4"
 
