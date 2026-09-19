@@ -83,7 +83,9 @@ ok "posting slot $POST_SLOT via $CONTAINER..."
 docker exec "$CONTAINER" python3 /opt/retrobyte-media/post_retrobyte_social.py --slot "$POST_SLOT" 2>&1 | tail -12
 
 # ---- 4. POST-VERIFY status:sent (per-channel recent check) ----------------
-sleep 4
+# Video uploads to IG/TikTok take longer than Twitter; wait for them to flip
+# from 'sending' to 'sent' before verifying.
+sleep 25
 python3 - "$TOK" <<'PY' || { OWNER_ALERT "post-verify could not run — manual check needed."; exit 4; }
 import sys, json, urllib.request
 from datetime import datetime, timezone
