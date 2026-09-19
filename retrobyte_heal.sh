@@ -8,6 +8,8 @@
 # Usage: retrobyte_heal.sh <slot>   (slot = 0 morning | 1 evening)
 set -u
 SLOT="${1:-0}"
+# poster expects morning|evening, not numeric
+POST_SLOT="morning"; [ "$SLOT" = "1" ] && POST_SLOT="evening"
 MEDIA_DIR="/home/pcmedicalist/pcmedicalist-retrobyte-media"
 REPO_DIR="$MEDIA_DIR"
 ENV_FILE="/home/pcmedicalist/.pcmedicalist/.env.retrobyte"
@@ -77,30 +79,46 @@ fi
 ok "raw URL 200 — video reachable"
 
 # ---- 3. POST via container poster (shareNow) --------------------------------
-ok "posting slot $SLOT via $CONTAINER..."
-docker exec "$CONTAINER" python3 /opt/retrobyte-media/post_retrobyte_social.py --slot "$SLOT" 2>&1 | tail -12
+ok "posting slot $POST_SLOT via $CONTAINER..."
+docker exec "$CONTAINER" python3 /opt/retrobyte-media/post_retrobyte_social.py --slot "$POST_SLOT" 2>&1 | tail -12
 
-# ---- 4. POST-VERIFY status:sent (retry once) --------------------------------
-sleep 3
-python3 - "$TOK" "$SUBJECT" <<'PY' || { OWNER_ALERT "post-verify could not run — manual check needed."; exit 4; }
-import sys, json, urllib.request, time
-tok=sys.argv[1]; subj=sys.argv[2]
+# ---- 4. POST-VERIFY status:sent (per-channel recent check) ----------------
+sleep 4
+python3 - "$TOK" <<'PY' || { OWNER_ALERT "post-verify could not run — manual check needed."; exit 4; }
+import sys, json, urllib.request
+from datetime import datetime, timezone
+tok=sys.argv[1]
 H={'Authorization':'Bearer '+tok,'Content-Type':'application/json'}
 def gql(q,v=None):
     r=urllib.request.urlopen(urllib.request.Request('https://api.buffer.com/graphql',data=json.dumps({'query':q,'variables':v or {}}).encode(),headers=H),timeout=40)
     return json.loads(r.read().decode())
 oid=gql('query{account{organizations{id}}}')['data']['account']['organizations'][0]['id']
-q='''query($i:PostsInput!){ posts(input:$i, first:20){ edges{ node{ id status channel{ service } text } } } }'''
-d=gql(q,{'i':{'organizationId':oid,'filter':{'status':['sent']}}})
-sent=[e['node'] for e in d['data']['posts']['edges'] if subj.split()[-1].lower() in e['node']['text'].lower()]
-if not sent:
-    print('VERIFY: no sent post matching', subj, '- retrying once...', file=sys.stderr)
-    # one retry already happened in poster; just report
-    print('RETRY_NEEDED', file=sys.stderr); sys.exit(1)
-svc={n['channel']['service'] for n in sent}
-print('VERIFIED sent on:', svc)
-if svc < {'twitter','instagram','tiktok'}:
-    print('PARTIAL: missing', {'twitter','instagram','tiktok'}-svc, file=sys.stderr); sys.exit(1)
+# NOTE: Buffer's posts(filter:{status:['sent']}) returns empty (unsupported enum
+# filter shape). Query most-recent posts unfiltered, then check the latest per
+# channel is 'sent' and recent (<10 min old).
+q='''query($i:PostsInput!){ posts(input:$i, first:15){ edges{ node{ id status sentAt channel{ service } } } } }'''
+d=gql(q,{'i':{'organizationId':oid}})
+nodes=[e['node'] for e in d['data']['posts']['edges']]
+# latest post per channel
+latest={}
+for n in nodes:
+    svc=n['channel']['service']
+    if svc not in latest:
+        latest[svc]=n
+now=datetime.now(timezone.utc)
+want={'twitter','instagram','tiktok'}
+missing=[]
+for svc in want:
+    n=latest.get(svc)
+    if not n:
+        missing.append(svc); continue
+    sent=n.get('status')=='sent'
+    recent = n.get('sentAt') and (now - datetime.fromisoformat(n['sentAt'].replace('Z','+00:00'))).total_seconds() < 600
+    if not (sent and recent):
+        missing.append(f"{svc}:{n.get('status')}")
+if missing:
+    print('VERIFY FAIL:', missing, file=sys.stderr); sys.exit(1)
+print('VERIFIED sent+recent on:', sorted(latest.keys()))
 PY
 if [ $? -ne 0 ]; then
   OWNER_ALERT "Post-verify: RetroByte $SUBJECT did not confirm status:sent on all channels. Manual check."
