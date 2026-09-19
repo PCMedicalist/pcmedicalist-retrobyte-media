@@ -32,6 +32,7 @@ import subprocess
 import sys
 import fcntl
 import urllib.request
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Config
@@ -40,13 +41,38 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = "/home/pcmedicalist/.pcmedicalist/.env.retrobyte"
 MEDIA_BASE_URL = "https://raw.githubusercontent.com/PCMedicalist/pcmedicalist-retrobyte-media/main/media"
 MEDIA_DIR = "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/media"
-STATE_FILE = os.path.join(SCRIPT_DIR, ".retrobyte_post_state.json")
+STATE_FILE = os.environ.get(
+    "RETROBYTE_STATE_FILE",
+    os.path.join(SCRIPT_DIR, ".retrobyte_post_state.json"))
 BUFFER_GRAPHQL = "https://api.buffer.com/graphql"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_URL = os.environ.get(
+    "RETROBYTE_OLLAMA_URL", "http://localhost:11434/api/generate")
 MODEL = "retrobyte:3b"
 
 # Channels we post to (service names as they appear in Buffer)
 CHANNEL_SERVICES = ["twitter", "instagram", "tiktok"]
+
+# Rotating baseLINE call-to-action pool — every caption ends with one of these
+# so RetroByte posts drive viewers to the baseLINE Twitch extension + site.
+# Each post advances a CTA rotation index (stored in state) so the CTA varies
+# across the 9-day video loop and feels fresh on reposts.
+BASELINE_CTAS = [
+    "Support RetroByte live on Twitch via the baseLINE extension → baseline.click",
+    "Watch RetroByte on the baseLINE Twitch extension → baseline.click",
+    "Tip RetroByte in real time on Twitch — powered by baseLINE → baseline.click",
+    "Go live with RetroByte + baseLINE: streamer crypto tips on Twitch → baseline.click",
+    "RetroByte runs on baseLINE — get the Twitch tipping extension → baseline.click",
+]
+
+# Hashtag rotation pool — varied per post to avoid samey #RetroByte/#PCMedicalist spam
+HASHTAG_POOL = [
+    "#RetroByte",
+    "#RetroByte #PCMedicalist",
+    "#RetroByte #RetroTech",
+    "#RetroByte #TechNostalgia",
+    "#RetroByte #ThrowbackTech",
+    "#RetroByte #BaseLINE",
+]
 
 # Caption generation prompt — pulls persona voice from RetroByte SOUL/IDENTITY
 CAPTION_SYSTEM = (
@@ -60,11 +86,11 @@ CAPTION_SYSTEM = (
 CAPTION_TASK = (
     "Write ONE short RetroByte social caption about the video titled: \"{title}\".\n"
     "Rules:\n"
-    "- Max 260 characters total (hard limit for X).\n"
+    "- Max 200 characters total (hard limit; a separate CTA is appended after).\n"
     "- 1-2 sentences, in RetroByte's excited voice.\n"
     "- Relate it to the video title's theme (discovery, bonding, morning, laughing, etc.).\n"
-    "- End with exactly one hashtag line: #RetroByte (and optionally one more relevant tag).\n"
-    "- No quotation marks around the whole thing. No hashtag spam.\n"
+    "- Do NOT add any hashtags or call-to-action — those are added automatically.\n"
+    "- No quotation marks around the whole thing. Write like a human, not a bot.\n"
     "Caption:"
 )
 
@@ -126,10 +152,15 @@ def create_post(token, channel_id, text, media_url, service):
       }
     }
     """
+    # SEND IMMEDIATELY: use mode:"shareNow" (Buffer's explicit send-now mode).
+    # The original addToQueue+automatic left posts stranded in RetroByte's
+    # Buffer queue for 12h+ with nothing reaching the socials. shareNow pushes
+    # straight to the channel. schedulingType is required by the schema, and
+    # "automatic" is accepted alongside shareNow (shareNow wins -> sends now).
     inp = {
         "text": text,
         "channelId": channel_id,
-        "mode": "addToQueue",
+        "mode": "shareNow",
         "schedulingType": "automatic",
         "assets": [{"video": {"url": media_url}}],
     }
@@ -150,13 +181,13 @@ def title_to_theme(title):
     return t.replace("-", " ").strip()
 
 
-def generate_caption(theme):
+def generate_caption(theme, hashtag, cta):
     prompt = CAPTION_SYSTEM + "\n\n" + CAPTION_TASK.format(title=theme)
     body = json.dumps({
         "model": MODEL,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.9, "num_predict": 140, "top_p": 0.9},
+        "options": {"temperature": 0.9, "num_predict": 120, "top_p": 0.9},
     }).encode()
     req = urllib.request.Request(
         OLLAMA_URL, data=body, headers={"Content-Type": "application/json"}
@@ -168,23 +199,30 @@ def generate_caption(theme):
     except Exception as e:
         print(f"[warn] caption gen failed ({e}); using fallback", file=sys.stderr)
         text = ""
-    # Clean: strip stray quotes, collapse whitespace
+    # Clean: strip stray quotes, collapse whitespace, and remove any hashtags
+    # the model may have appended (we control hashtags via HASHTAG_POOL).
     text = text.strip().strip('"').strip()
     text = re.sub(r"\s+", " ", text)
-    # Enforce hard length limit (X) — keep hashtag line
-    if len(text) > 280:
-        # keep up to last hashtag block
-        if "#" in text:
-            parts = text.rsplit("#", 1)
-            head = parts[0].strip()
-            tail = "#" + parts[1]
-            head = head[: 280 - len(tail) - 1].rstrip()
-            text = head + " " + tail
+    text = re.sub(r"#\S+", "", text).strip()  # drop model-emitted hashtags
+    # Build final caption: lead line + hashtag + blank line + baseLINE CTA.
+    # Enforce hard X limit of 280 chars on the WHOLE thing.
+    base = text
+    suffix = f"\n\n{hashtag}\n\n{cta}"
+    if len(base) + len(suffix) > 280:
+        # trim lead line, keep CTA + hashtag intact
+        head_room = 280 - len(suffix)
+        if head_room > 20:
+            base = base[:head_room].rstrip()
         else:
-            text = text[:280].rstrip()
-    if not text:
-        text = "WAIT... the internet had a good-morning button this whole time?! ☀️💾 #RetroByte"
-    return text
+            # extreme fallback: drop lead line entirely, keep hashtag + CTA
+            base = ""
+    if base:
+        final = base + suffix
+    else:
+        final = hashtag + suffix
+    if not final.strip():
+        final = f"WAIT... the internet had a good-morning button this whole time?! ☀️💾\n\n{hashtag}\n\n{cta}"
+    return final
 
 
 # ---------------------------------------------------------------------------
@@ -202,9 +240,13 @@ def list_videos():
 def load_state():
     try:
         with open(STATE_FILE) as f:
-            return json.load(f)
+            st = json.load(f)
     except FileNotFoundError:
-        return {"last_index": -1, "history": []}
+        st = {}
+    st.setdefault("last_index", -1)
+    st.setdefault("cta_index", -1)
+    st.setdefault("history", [])
+    return st
 
 
 def save_state(state):
@@ -216,9 +258,10 @@ LOCK_FILE = STATE_FILE + ".lock"
 
 
 def reserve_video(force=None):
-    """Atomically pick the next rotation video and persist the index IMMEDIATELY
-    (before the slow caption generation), so concurrent runs can never select the
-    same clip. Uses an exclusive flock so two near-simultaneous cron runs serialize
+    """Atomically pick the next rotation video AND advance the CTA + hashtag
+    rotation indices, persisting everything IMMEDIATELY (before the slow caption
+    generation), so concurrent runs can never select the same clip or CTA.
+    Uses an exclusive flock so two near-simultaneous cron runs serialize
     cleanly and each reserve a distinct index."""
     with open(LOCK_FILE, "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
@@ -234,8 +277,15 @@ def reserve_video(force=None):
             idx = (state.get("last_index", -1) + 1) % len(videos)
         video = videos[idx]
         state["last_index"] = idx
+
+        # Advance CTA + hashtag rotation in lock-step with the video pick.
+        cta_idx = (state.get("cta_index", -1) + 1) % len(BASELINE_CTAS)
+        hashtag_idx = (state.get("cta_index", -1) + 1) % len(HASHTAG_POOL)
+        state["cta_index"] = cta_idx
         save_state(state)  # reserve now, before any slow work
-        return video, idx
+        cta = BASELINE_CTAS[cta_idx]
+        hashtag = HASHTAG_POOL[hashtag_idx]
+        return video, idx, cta, hashtag
 
 
 # ---------------------------------------------------------------------------
@@ -256,13 +306,75 @@ def main():
         print(f"ERROR: BUFFER_ACCESS_TOKEN not found in {ENV_FILE}", file=sys.stderr)
         sys.exit(2)
 
-    video, _ = reserve_video(force=args.force_video)
+    # --- RetroByte "Discovering 90s Tech" generated video (preferred) ------
+    # If the host generator staged a fresh discovery video, post THAT as a
+    # narrated video (video mode on all channels) instead of a random clip.
+    ready = Path(SCRIPT_DIR) / "_discovery_ready.json"
+    if ready.exists():
+        try:
+            disc = json.loads(ready.read_text())
+            dvideo = disc.get("video_name")
+            dcaption = disc.get("caption")
+            dpath = disc.get("video")  # absolute path of staged file
+            # Validate the staged file still exists (prefer the real path; fall
+            # back to MEDIA_DIR join for backward-compat).
+            _exists = os.path.exists(dpath) if dpath else False
+            if not _exists and dvideo:
+                _exists = os.path.exists(os.path.join(MEDIA_DIR, dvideo))
+            if dvideo and dcaption and _exists:
+                media_url = f"{MEDIA_BASE_URL}/{dvideo}"
+                print(f"[{args.slot}] DISCOVERY video: {dvideo}")
+                print(f"[{args.slot}] caption: {dcaption}")
+                if args.dry_run:
+                    print(f"[{args.slot}] DRY-RUN: skipping Buffer. "
+                          f"Would post DISCOVERY video to {CHANNEL_SERVICES}.")
+                    return
+                channels = get_channels(token)
+                results = {}
+                for svc in CHANNEL_SERVICES:
+                    ch = channels.get(svc)
+                    if not ch:
+                        print(f"[{args.slot}] WARN: channel '{svc}' not connected; skipping",
+                              file=sys.stderr)
+                        continue
+                    # X/Twitter hard-limits captions to 280 chars; clamp with a
+                    # safety margin (Buffer counts some chars toward the limit,
+                    # and the em-dash/arrow widen it). Always trim to <=275 for X.
+                    _cap = dcaption
+                    if svc == "twitter" and len(dcaption) > 275:
+                        _cap = dcaption[:272].rsplit(None, 1)[0] + "…"
+                    res = create_post(token, ch["id"], _cap, media_url, svc)
+                    tn = res.get("__typename")
+                    results[svc] = (
+                        f"OK id={res.get('post', {}).get('id')}"
+                        if tn == "PostActionSuccess"
+                        else f"ERROR {res.get('message', res)}")
+                    print(f"[{args.slot}] {svc}: {results[svc]}")
+                # Clear the ready flag ONLY after a successful post so a missed
+                # run can retry (the generator also rotates subjects per day).
+                if any(v.startswith("OK") for v in results.values()):
+                    try:
+                        ready.unlink()
+                    except Exception:
+                        pass
+                    print(f"[{args.slot}] DISCOVERY posted; cleared {ready.name}")
+                else:
+                    print(f"[{args.slot}] NO successful posts — keeping discovery staged",
+                          file=sys.stderr)
+                    sys.exit(1)
+                return
+        except Exception as _e:
+            print(f"[{args.slot}] discovery read failed ({_e}); falling back to clip",
+                  file=sys.stderr)
+
+    # --- Fallback: rotating brand clip (existing behavior) -----------------
+    video, _, cta, hashtag = reserve_video(force=args.force_video)
     theme = title_to_theme(video)
     media_url = f"{MEDIA_BASE_URL}/{video}"
 
     print(f"[{args.slot}] video: {video}")
     print(f"[{args.slot}] media_url: {media_url}")
-    caption = generate_caption(theme)
+    caption = generate_caption(theme, hashtag, cta)
     print(f"[{args.slot}] caption: {caption}")
 
     if args.dry_run:
@@ -274,7 +386,8 @@ def main():
     for svc in CHANNEL_SERVICES:
         ch = channels.get(svc)
         if not ch:
-            print(f"[{args.slot}] WARN: channel '{svc}' not connected in Buffer; skipping", file=sys.stderr)
+            print(f"[{args.slot}] WARN: channel '{svc}' not connected in Buffer; skipping",
+                  file=sys.stderr)
             continue
         res = create_post(token, ch["id"], caption, media_url, svc)
         tn = res.get("__typename")

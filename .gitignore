@@ -1,9 +1,12 @@
-# Only media/ videos + the poster script + state are allowed.
+# Only the RetroByte posting pipeline + generated media are allowed.
 # Block everything else by default (keeps secrets out of this public repo).
+# NOTE: .env.retrobyte is NEVER here — it's mounted from /home/pcmedicalist/.pcmedicalist/
+# at runtime. Runtime state (.retrobyte_post_state.json) is also excluded.
 *
 !.gitignore
 !README.md
 !post_retrobyte_social.py
-!.retrobyte_post_state.json
+!retrobyte_discovery_video.py
+!retrobyte_scheduler.py
 !media/
 !media/**
