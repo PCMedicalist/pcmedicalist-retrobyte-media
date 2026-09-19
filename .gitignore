@@ -8,6 +8,7 @@
 !post_retrobyte_social.py
 !retrobyte_discovery_video.py
 !retrobyte_scheduler.py
+!retrobyte_heal.sh
 !media/
 !media/**
 !.discovery_state.json
