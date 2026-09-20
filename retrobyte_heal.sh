@@ -78,9 +78,12 @@ if [ "$http_code" != "200" ]; then
 fi
 ok "raw URL 200 — video reachable"
 
-# ---- 3. POST via container poster (shareNow) --------------------------------
-ok "posting slot $POST_SLOT via $CONTAINER..."
-docker exec "$CONTAINER" python3 /opt/retrobyte-media/post_retrobyte_social.py --slot "$POST_SLOT" 2>&1 | tail -12
+# ---- 3. POST via local poster (RetroByte runs LOCAL; no container) ---------
+# RetroByte inference + posting happen on the host (the retrobyte-cron container
+# was retired to keep the VPS load down). Run the poster directly here.
+POSTER="$REPO_DIR/post_retrobyte_social.py"
+ok "posting slot $POST_SLOT via local poster..."
+python3 "$POSTER" --slot "$POST_SLOT" 2>&1 | tail -12
 
 # ---- 4. POST-VERIFY status:sent (per-channel recent check) ----------------
 # Video uploads to IG/TikTok take longer than Twitter; wait for them to flip

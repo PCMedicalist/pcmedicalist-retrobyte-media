@@ -262,21 +262,34 @@ def reserve_video(force=None):
     rotation indices, persisting everything IMMEDIATELY (before the slow caption
     generation), so concurrent runs can never select the same clip or CTA.
     Uses an exclusive flock so two near-simultaneous cron runs serialize
-    cleanly and each reserve a distinct index."""
+    cleanly and each reserve a distinct index.
+
+    DEDUP: clamps last_index into the current pool size (so a stale high index
+    from when the pool was larger can't pin every run to one clip) and never
+    returns the same clip twice in a row."""
     with open(LOCK_FILE, "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         videos = list_videos()
         if not videos:
             raise RuntimeError(f"No videos found in {MEDIA_DIR}")
+        # Clamp a stale last_index into the current pool so rotation actually
+        # advances instead of always landing on index (stale+1) % small_pool.
         state = load_state()
+        li = state.get("last_index", -1)
+        if li < 0 or li >= len(videos):
+            li = -1  # reset to start fresh from the current pool
         if force:
             if force not in videos:
                 raise RuntimeError(f"--force-video {force} not found in {MEDIA_DIR}")
             idx = videos.index(force)
         else:
-            idx = (state.get("last_index", -1) + 1) % len(videos)
+            idx = (li + 1) % len(videos)
+            # Never post the same clip twice consecutively.
+            if videos[idx] == state.get("last_video") and len(videos) > 1:
+                idx = (idx + 1) % len(videos)
         video = videos[idx]
         state["last_index"] = idx
+        state["last_video"] = video
 
         # Advance CTA + hashtag rotation in lock-step with the video pick.
         cta_idx = (state.get("cta_index", -1) + 1) % len(BASELINE_CTAS)
@@ -309,19 +322,36 @@ def main():
     # --- RetroByte "Discovering 90s Tech" generated video (preferred) ------
     # If the host generator staged a fresh discovery video, post THAT as a
     # narrated video (video mode on all channels) instead of a random clip.
+    #
+    # DEDUP GUARD: never post the same discovery episode twice. The generator
+    # keys each episode by subject+date; we record posted episodes in state and
+    # skip (or consume-and-skip) if we already posted it. This is what prevented
+    # the "same video posted multiple times" failure.
     ready = Path(SCRIPT_DIR) / "_discovery_ready.json"
+    state = load_state()
+    posted_episodes = set(state.get("posted_episodes", []))
     if ready.exists():
         try:
             disc = json.loads(ready.read_text())
             dvideo = disc.get("video_name")
             dcaption = disc.get("caption")
             dpath = disc.get("video")  # absolute path of staged file
+            dep_key = f"{disc.get('subject','?')}|{disc.get('ts','?')[:10]}"
             # Validate the staged file still exists (prefer the real path; fall
             # back to MEDIA_DIR join for backward-compat).
             _exists = os.path.exists(dpath) if dpath else False
             if not _exists and dvideo:
                 _exists = os.path.exists(os.path.join(MEDIA_DIR, dvideo))
             if dvideo and dcaption and _exists:
+                # Already posted this episode? Consume the flag but do NOT repost.
+                if dep_key in posted_episodes:
+                    print(f"[{args.slot}] SKIP: episode {dep_key} already posted (dedup). Clearing stale ready flag.")
+                    try:
+                        ready.unlink()
+                    except Exception:
+                        pass
+                    return
+
                 media_url = f"{MEDIA_BASE_URL}/{dvideo}"
                 print(f"[{args.slot}] DISCOVERY video: {dvideo}")
                 print(f"[{args.slot}] caption: {dcaption}")
@@ -353,11 +383,16 @@ def main():
                 # Clear the ready flag ONLY after a successful post so a missed
                 # run can retry (the generator also rotates subjects per day).
                 if any(v.startswith("OK") for v in results.values()):
+                    # Record this episode as posted so the dedup guard never
+                    # reposts it even if the ready flag lingers or regenerates.
+                    posted_episodes.add(dep_key)
+                    state["posted_episodes"] = sorted(posted_episodes)
+                    save_state(state)
                     try:
                         ready.unlink()
                     except Exception:
                         pass
-                    print(f"[{args.slot}] DISCOVERY posted; cleared {ready.name}")
+                    print(f"[{args.slot}] DISCOVERY posted; cleared {ready.name}; recorded episode {dep_key}")
                 else:
                     print(f"[{args.slot}] NO successful posts — keeping discovery staged",
                           file=sys.stderr)
