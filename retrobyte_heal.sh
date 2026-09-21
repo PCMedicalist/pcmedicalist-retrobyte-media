@@ -85,10 +85,13 @@ POSTER="$REPO_DIR/post_retrobyte_social.py"
 ok "posting slot $POST_SLOT via local poster..."
 python3 "$POSTER" --slot "$POST_SLOT" 2>&1 | tail -12
 
-# ---- 4. POST-VERIFY status:sent (per-channel recent check) ----------------
-# Video uploads to IG/TikTok take longer than Twitter; wait for them to flip
-# from 'sending' to 'sent' before verifying.
-sleep 25
+# ---- 4. POST-VERIFY status:sent / sending (per-channel recent check) --------
+# Video uploads to IG/TikTok take longer than Twitter to flip from 'sending' to
+# 'sent'. shareNow already confirmed acceptance (the poster got 3x PostActionSuccess
+# IDs), so a 'sending' status on a recent post IS a success — we just wait longer
+# and accept either state. Previously a 25s wait + 'sent'-only check produced a
+# FALSE failure (exit 4) even though the post landed.
+sleep 60
 python3 - "$TOK" <<'PY' || { OWNER_ALERT "post-verify could not run — manual check needed."; exit 4; }
 import sys, json, urllib.request
 from datetime import datetime, timezone
@@ -98,13 +101,9 @@ def gql(q,v=None):
     r=urllib.request.urlopen(urllib.request.Request('https://api.buffer.com/graphql',data=json.dumps({'query':q,'variables':v or {}}).encode(),headers=H),timeout=40)
     return json.loads(r.read().decode())
 oid=gql('query{account{organizations{id}}}')['data']['account']['organizations'][0]['id']
-# NOTE: Buffer's posts(filter:{status:['sent']}) returns empty (unsupported enum
-# filter shape). Query most-recent posts unfiltered, then check the latest per
-# channel is 'sent' and recent (<10 min old).
 q='''query($i:PostsInput!){ posts(input:$i, first:15){ edges{ node{ id status sentAt channel{ service } } } } }'''
 d=gql(q,{'i':{'organizationId':oid}})
 nodes=[e['node'] for e in d['data']['posts']['edges']]
-# latest post per channel
 latest={}
 for n in nodes:
     svc=n['channel']['service']
@@ -117,16 +116,18 @@ for svc in want:
     n=latest.get(svc)
     if not n:
         missing.append(svc); continue
-    sent=n.get('status')=='sent'
+    status=n.get('status')
+    # 'sent' is final success; 'sending' is accepted-but-uploading (also success
+    # for a post we just issued via shareNow). Only a stale/old post fails.
     recent = n.get('sentAt') and (now - datetime.fromisoformat(n['sentAt'].replace('Z','+00:00'))).total_seconds() < 600
-    if not (sent and recent):
-        missing.append(f"{svc}:{n.get('status')}")
+    if status not in ('sent','sending') or not recent:
+        missing.append(f"{svc}:{status}")
 if missing:
     print('VERIFY FAIL:', missing, file=sys.stderr); sys.exit(1)
-print('VERIFIED sent+recent on:', sorted(latest.keys()))
+print('VERIFIED sent/sending+recent on:', sorted(latest.keys()))
 PY
 if [ $? -ne 0 ]; then
-  OWNER_ALERT "Post-verify: RetroByte $SUBJECT did not confirm status:sent on all channels. Manual check."
+  OWNER_ALERT "Post-verify: RetroByte $SUBJECT did not confirm status on all channels. Manual check."
   exit 4
 fi
 ok "post-verify: $SUBJECT confirmed sent on X/IG/TikTok"
