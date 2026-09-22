@@ -1,19 +1,24 @@
 {
   "titles": [
+    "Base",
     "Floppy Disk",
     "Game Boy",
+    "THE CASSETTE TAPE",
+    "THE DOT-MATRIX PRINTER",
+    "THE PAGER",
+    "THE PORTABLE CD PLAYER",
+    "THE ZIP DRIVE",
     "Tamagotchi",
-    "The VHS Tape",
     "The Dial-Up Modem",
     "The Electric Outlet",
-    "Base"
+    "The VHS Tape"
   ],
   "cycle": 0,
   "last": {
-    "title": "Floppy Disk",
+    "title": "THE PAGER",
     "slot": 0,
-    "file": "disc_video_2026-09-22-d0.mp4",
-    "ts": "2026-09-22T09:29:50.795708Z"
+    "file": "disc_video_2026-09-22-d0_narrated.mp4",
+    "ts": "2026-09-22T23:19:12.294020Z"
   },
   "note": "Pre-seeded with already-produced RetroByte discovery episodes so the picker skips them. Titles must match the series-bible episode titles exactly (case-insensitive compare in next_episode)."
 }
