@@ -389,59 +389,45 @@ def brand_overlay(clip_path: Path, out_path: Path) -> str | None:
 
     T2VZ cannot hold a consistent character (recipe gotcha: generates generic
     objects). We overlay the actual RetroByte PNG so the video is always on-brand,
-    while the underlying clip provides the gadget motion. Mascot sits lower-left
-    with a subtle scale pulse for life.
+    while the underlying clip provides the gadget motion. Mascot sits lower-left.
+    Uses the robust two-input -filter_complex form (the movie= form is fragile).
     """
     ffmpeg = shutil.which("ffmpeg")
     char = CHARACTER_IMG
     if not ffmpeg or not char.exists():
         return None
-    # scale mascot to ~38% width, anchor bottom-left with 4% margin
-    vf = (
-        f"movie='{char.as_posix()}'[m];"
-        f"[0:v][m]overlay=W*0.04:H-h-(H*0.04):"
-        f"shortest=1:"
-        f"eval=init:"
-        f"format=auto"
-    )
     try:
         r = subprocess.run(
-            [ffmpeg, "-y", "-i", str(clip_path), "-vf", vf,
+            [ffmpeg, "-y", "-i", str(clip_path), "-i", str(char),
+             "-filter_complex",
+             "overlay=W*0.04:H-h-(H*0.04):shortest=1",
              "-c:a", "copy", str(out_path)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
         if r.returncode == 0 and out_path.exists():
             return str(out_path)
-        # fallback: simple overlay without movie filter
-        vf2 = f"overlay=W*0.04:H-h-(H*0.04)"
-        r2 = subprocess.run(
-            [ffmpeg, "-y", "-i", str(clip_path), "-i", str(char),
-             "-filter_complex", vf2, "-c:a", "copy", str(out_path)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-        if r2.returncode == 0 and out_path.exists():
-            return str(out_path)
+        print(f"[discovery-gen] brand overlay fail: {(r.stderr or b'')[-300:].decode(errors='ignore')}",
+              file=sys.stderr)
     except Exception as e:
         print(f"[discovery-gen] brand overlay exc: {e}", file=sys.stderr)
     return None
 
 
 def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path) -> str | None:
-    """Add narrated audio + burned captions to the T2VZ motion clip via ffmpeg.
+    """Add narrated audio to the T2VZ motion clip via ffmpeg (reliable stream copy).
 
-    NOTE (recipe gotcha #6): mux_reel expects an IMAGE input, not an existing MP4,
-    so it fails ('Option loop not found'). We mux audio with plain ffmpeg and burn
-    CC in a separate pass.
+    NOTE (recipe gotcha #6): mux_reel expects an IMAGE, not an MP4. We use plain
+    ffmpeg. Burned CC is skipped here (fragile ASS pass) — the narration audio is
+    the must-have; caption text is delivered in the post body instead.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return None
-    # 1) Mux narration audio under the silent T2VZ clip (stream copy, no re-encode).
     tmp = out_path.with_name(out_path.stem + "_mixed.mp4")
     r1 = subprocess.run(
         [ffmpeg, "-y", "-i", str(clip_path), "-i", str(audio_path),
          "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(tmp)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     if r1.returncode != 0 or not tmp.exists():
-        # fallback: re-encode audio if stream copy failed
         r1 = subprocess.run(
             [ffmpeg, "-y", "-i", str(clip_path), "-i", str(audio_path),
              "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-c:a", "aac",
@@ -451,36 +437,9 @@ def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path)
         print(f"[discovery-gen] audio mux fail: {(r1.stderr or b'')[-300:].decode(errors='ignore')}",
               file=sys.stderr)
         return None
-    # 2) Burn the narration as captions (ass) so it reads like a real video.
-    ass = out_path.with_name(out_path.stem + ".ass")
-    try:
-        _write_ass(script, ass)
-        r2 = subprocess.run(
-            [ffmpeg, "-y", "-i", str(tmp), "-vf", f"subtitles={ass}",
-             "-c:a", "copy", str(out_path)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-        if r2.returncode == 0 and out_path.exists():
-            return str(out_path)
-    except Exception as e:
-        print(f"[discovery-gen] CC burn skip: {e}", file=sys.stderr)
-    # If CC burn fails, return the audio-mixed clip (still narrated).
-    if tmp.exists():
-        shutil.move(str(tmp), str(out_path))
-        return str(out_path)
-    return None
-
-
-def _write_ass(text: str, path: Path):
-    """Write a simple centered ASS subtitle for the narration."""
-    safe = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-    path.write_text(
-        "[Script Info]\nScriptType: v4.00\n\n"
-        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, "
-        "BackColour, Bold, Alignment, MarginL, MarginR, MarginV\n"
-        "Style: Default,Arial,28,&H00FFFFFF,&H80000000,-1,2,40,40,60\n\n"
-        "[Events]\nFormat: Layer, Start, End, Style, Text\n"
-        f"Dialogue: 0,0:00:00.00,9:59:59.99,Default,{safe}\n",
-        encoding="utf-8")
+    # tmp is the final narrated clip (audio + video, CC delivered in post text)
+    shutil.move(str(tmp), str(out_path))
+    return str(out_path)
 
 
 def build_montage(narration: str, frames: list[Path], audio_path: Path,
