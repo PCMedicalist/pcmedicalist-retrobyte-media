@@ -390,7 +390,7 @@ def build_montage(narration: str, frames: list[Path], audio_path: Path,
         if not Path(baudio).exists():
             print(f"[discovery-gen] beat {i} audio slice fail", file=sys.stderr)
             return None
-        br = mux_reel(img, baudio, bmp4, ken_burns=True, script=bscript,
+        br = mux_reel(img, baudio, bmp4, ken_burns=False, script=bscript,
                      captions=True)
         if not br.get("ok") or not Path(bmp4).exists():
             print(f"[discovery-gen] beat {i} render fail: {br.get('error')}",
@@ -467,6 +467,9 @@ def main():
         return
 
     mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
+    pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
+                     "pcmedicalist-social-publisher/pipelines")
+    sys.path.insert(0, str(pipelines))
     import media_clip as mc
     vr = mc._tts(narration, str(mp3), voice="en-US-AnaNeural")
     if not vr.get("ok") or not mp3.exists():
