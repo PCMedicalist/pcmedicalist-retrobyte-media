@@ -1,0 +1,19 @@
+{
+  "titles": [
+    "Floppy Disk",
+    "Game Boy",
+    "Tamagotchi",
+    "The VHS Tape",
+    "The Dial-Up Modem",
+    "The Electric Outlet",
+    "Base"
+  ],
+  "cycle": 0,
+  "last": {
+    "title": "Floppy Disk",
+    "slot": 0,
+    "file": "disc_video_2026-09-22-d0.mp4",
+    "ts": "2026-09-22T09:29:50.795708Z"
+  },
+  "note": "Pre-seeded with already-produced RetroByte discovery episodes so the picker skips them. Titles must match the series-bible episode titles exactly (case-insensitive compare in next_episode)."
+}
