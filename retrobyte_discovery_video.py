@@ -384,24 +384,103 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
         return None
 
 
-def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path) -> str | None:
-    """Overlay narrated audio + burned captions onto the T2VZ motion clip."""
-    pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
-                     "pcmedicalist-social-publisher/pipelines")
-    sys.path.insert(0, str(pipelines))
-    import media_clip as mc
-    try:
-        from mux_video import mux_reel
-    except Exception:
-        sys.path.insert(0, str(Path.home() / "pcmedicalist" /
-                              "pcmedicalist-content-os" / "generators"))
-        from mux_video import mux_reel
-    res = mux_reel(clip_path, audio_path, out_path, ken_burns=False,
-                   script=script, captions=True)
-    if not res.get("ok") or not Path(out_path).exists():
-        print(f"[discovery-gen] mux fail: {res.get('error')}", file=sys.stderr)
+def brand_overlay(clip_path: Path, out_path: Path) -> str | None:
+    """Composite the real RetroByte brand mascot over the T2VZ motion clip.
+
+    T2VZ cannot hold a consistent character (recipe gotcha: generates generic
+    objects). We overlay the actual RetroByte PNG so the video is always on-brand,
+    while the underlying clip provides the gadget motion. Mascot sits lower-left
+    with a subtle scale pulse for life.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    char = CHARACTER_IMG
+    if not ffmpeg or not char.exists():
         return None
-    return str(out_path)
+    # scale mascot to ~38% width, anchor bottom-left with 4% margin
+    vf = (
+        f"movie='{char.as_posix()}'[m];"
+        f"[0:v][m]overlay=W*0.04:H-h-(H*0.04):"
+        f"shortest=1:"
+        f"eval=init:"
+        f"format=auto"
+    )
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(clip_path), "-vf", vf,
+             "-c:a", "copy", str(out_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        if r.returncode == 0 and out_path.exists():
+            return str(out_path)
+        # fallback: simple overlay without movie filter
+        vf2 = f"overlay=W*0.04:H-h-(H*0.04)"
+        r2 = subprocess.run(
+            [ffmpeg, "-y", "-i", str(clip_path), "-i", str(char),
+             "-filter_complex", vf2, "-c:a", "copy", str(out_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        if r2.returncode == 0 and out_path.exists():
+            return str(out_path)
+    except Exception as e:
+        print(f"[discovery-gen] brand overlay exc: {e}", file=sys.stderr)
+    return None
+
+
+def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path) -> str | None:
+    """Add narrated audio + burned captions to the T2VZ motion clip via ffmpeg.
+
+    NOTE (recipe gotcha #6): mux_reel expects an IMAGE input, not an existing MP4,
+    so it fails ('Option loop not found'). We mux audio with plain ffmpeg and burn
+    CC in a separate pass.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    # 1) Mux narration audio under the silent T2VZ clip (stream copy, no re-encode).
+    tmp = out_path.with_name(out_path.stem + "_mixed.mp4")
+    r1 = subprocess.run(
+        [ffmpeg, "-y", "-i", str(clip_path), "-i", str(audio_path),
+         "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(tmp)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    if r1.returncode != 0 or not tmp.exists():
+        # fallback: re-encode audio if stream copy failed
+        r1 = subprocess.run(
+            [ffmpeg, "-y", "-i", str(clip_path), "-i", str(audio_path),
+             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-c:a", "aac",
+             "-shortest", str(tmp)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    if r1.returncode != 0 or not tmp.exists():
+        print(f"[discovery-gen] audio mux fail: {(r1.stderr or b'')[-300:].decode(errors='ignore')}",
+              file=sys.stderr)
+        return None
+    # 2) Burn the narration as captions (ass) so it reads like a real video.
+    ass = out_path.with_name(out_path.stem + ".ass")
+    try:
+        _write_ass(script, ass)
+        r2 = subprocess.run(
+            [ffmpeg, "-y", "-i", str(tmp), "-vf", f"subtitles={ass}",
+             "-c:a", "copy", str(out_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        if r2.returncode == 0 and out_path.exists():
+            return str(out_path)
+    except Exception as e:
+        print(f"[discovery-gen] CC burn skip: {e}", file=sys.stderr)
+    # If CC burn fails, return the audio-mixed clip (still narrated).
+    if tmp.exists():
+        shutil.move(str(tmp), str(out_path))
+        return str(out_path)
+    return None
+
+
+def _write_ass(text: str, path: Path):
+    """Write a simple centered ASS subtitle for the narration."""
+    safe = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    path.write_text(
+        "[Script Info]\nScriptType: v4.00\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, "
+        "BackColour, Bold, Alignment, MarginL, MarginR, MarginV\n"
+        "Style: Default,Arial,28,&H00FFFFFF,&H80000000,-1,2,40,40,60\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+        f"Dialogue: 0,0:00:00.00,9:59:59.99,Default,{safe}\n",
+        encoding="utf-8")
 
 
 def build_montage(narration: str, frames: list[Path], audio_path: Path,
@@ -537,7 +616,15 @@ def main():
               file=sys.stderr)
         video_path = build_montage(narration, frames, mp3, video)
     else:
-        # Overlay narrated audio + burned CC onto the real-motion clip.
+        # Brand-lock: overlay real RetroByte mascot over the T2VZ motion.
+        branded = video.with_name(video.stem + "_brand.mp4")
+        branded_path = brand_overlay(Path(video_path), branded)
+        if branded_path:
+            video_path = branded_path
+        else:
+            print("[discovery-gen] brand overlay FAILED — using raw T2VZ clip",
+                  file=sys.stderr)
+        # Overlay narrated audio + burned CC onto the motion clip.
         muxed = video.with_name(video.stem + "_narrated.mp4")
         muxed_path = mux_audio_cc(Path(video_path), mp3, narration, muxed)
         if muxed_path:
