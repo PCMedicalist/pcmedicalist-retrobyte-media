@@ -349,6 +349,61 @@ def make_reaction_frame(subject: str, out_path: Path) -> Path:
     return out_path
 
 
+def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | None:
+    """Generate REAL motion video via the sovereign T2VZ wrapper (no pan/still).
+
+    The narration becomes the video prompt so RetroByte + the gadget are
+    generated as genuine diffusion motion. Returns the clip path or None.
+    """
+    from PIL import Image
+    # Build a RetroByte-flavored T2V prompt from the narration + subject.
+    prompt = (
+        f"retro 1990s nostalgia animation, a cute CRT-TV-headed robot with glowing "
+        f"blue pixel eyes discovers an old {subject.lower()}, wide-eyed amazement, "
+        f"reaches out to touch it, warm amber lighting, vaporwave palette, "
+        f"smooth motion, hand-drawn cartoon style"
+    )
+    t2vz = HERE / "t2vz_generate.py"
+    venv_py = Path("/home/pcmedicalist/pcmedicalist-diffusion/venv/bin/python3")
+    if not t2vz.exists() or not venv_py.exists():
+        print("[discovery-gen] t2vz_generate.py or venv missing", file=sys.stderr)
+        return None
+    base = out_path.with_name(out_path.stem + "_t2v.mp4")
+    try:
+        r = subprocess.run(
+            [str(venv_py), str(t2vz), "--prompt", prompt, "--out", str(base),
+             "--steps", "25", "--frames", "8", "--size", "320*576", "--fps", "8"],
+            capture_output=True, text=True, timeout=600)
+        if r.returncode != 0 or not base.exists():
+            print(f"[discovery-gen] t2vz fail: {(r.stderr or r.stdout)[-400:]}",
+                  file=sys.stderr)
+            return None
+        return str(base)
+    except Exception as e:
+        print(f"[discovery-gen] t2vz exc: {e}", file=sys.stderr)
+        return None
+
+
+def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path) -> str | None:
+    """Overlay narrated audio + burned captions onto the T2VZ motion clip."""
+    pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
+                     "pcmedicalist-social-publisher/pipelines")
+    sys.path.insert(0, str(pipelines))
+    import media_clip as mc
+    try:
+        from mux_video import mux_reel
+    except Exception:
+        sys.path.insert(0, str(Path.home() / "pcmedicalist" /
+                              "pcmedicalist-content-os" / "generators"))
+        from mux_video import mux_reel
+    res = mux_reel(clip_path, audio_path, out_path, ken_burns=False,
+                   script=script, captions=True)
+    if not res.get("ok") or not Path(out_path).exists():
+        print(f"[discovery-gen] mux fail: {res.get('error')}", file=sys.stderr)
+        return None
+    return str(out_path)
+
+
 def build_montage(narration: str, frames: list[Path], audio_path: Path,
                   out_path: Path) -> str | None:
     pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
@@ -476,8 +531,21 @@ def main():
         print("[discovery-gen] TTS FAILED — not staging", file=sys.stderr)
         sys.exit(1)
 
-    video_path = build_montage(narration, frames, mp3, video)
+    video_path = generate_t2v_clip(narration, subject, video)
     if not video_path:
+        print("[discovery-gen] T2VZ gen FAILED — falling back to montage",
+              file=sys.stderr)
+        video_path = build_montage(narration, frames, mp3, video)
+    else:
+        # Overlay narrated audio + burned CC onto the real-motion clip.
+        muxed = video.with_name(video.stem + "_narrated.mp4")
+        muxed_path = mux_audio_cc(Path(video_path), mp3, narration, muxed)
+        if muxed_path:
+            video_path = muxed_path
+        else:
+            print("[discovery-gen] audio mux FAILED — using silent T2VZ clip",
+                  file=sys.stderr)
+    if not video_path or not Path(video_path).exists():
         print("[discovery-gen] video build FAILED — not staging", file=sys.stderr)
         sys.exit(1)
 
