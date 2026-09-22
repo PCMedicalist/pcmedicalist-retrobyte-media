@@ -400,7 +400,7 @@ def brand_overlay(clip_path: Path, out_path: Path) -> str | None:
         r = subprocess.run(
             [ffmpeg, "-y", "-i", str(clip_path), "-i", str(char),
              "-filter_complex",
-             "overlay=W*0.04:H-h-(H*0.04):shortest=1",
+             "[1:v]scale=iw*0.38:-1[w];[0:v][w]overlay=W*0.04:H-h-(H*0.04)",
              "-c:a", "copy", str(out_path)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
         if r.returncode == 0 and out_path.exists():
