@@ -55,6 +55,35 @@ SERIES_FILES = [
     HERE / "RETROBYTE OLD TECH DISCOVERY.md",  # sync copy fallback
 ]
 STATE_FILE = HERE / "_discovery_state.json"
+POSTED_REGISTRY = HERE / "_posted_registry.json"
+
+
+def load_posted() -> set:
+    """Return the set of episode TITLES already generated/staged (dedup table)."""
+    if POSTED_REGISTRY.exists():
+        try:
+            return set(json.loads(POSTED_REGISTRY.read_text()).get("titles", []))
+        except Exception:
+            return set()
+    return set()
+
+
+def record_posted(title: str, slot: int, fname: str):
+    """Persist a generated episode to the dedup registry so it is never
+    re-picked until the full series cycle completes."""
+    data = {"titles": [], "cycle": 0}
+    if POSTED_REGISTRY.exists():
+        try:
+            data = json.loads(POSTED_REGISTRY.read_text())
+        except Exception:
+            data = {"titles": [], "cycle": 0}
+    titles = set(data.get("titles", []))
+    titles.add(title)
+    data["titles"] = sorted(titles)
+    data["last"] = {"title": title, "slot": slot, "file": fname,
+                    "ts": _dt.datetime.utcnow().isoformat() + "Z"}
+    POSTED_REGISTRY.write_text(json.dumps(data, indent=2))
+
 
 # --- Real artifact imagery: Wikimedia Commons file title per subject -------
 # Public-domain / freely-licensed photos so the montage shows the ACTUAL
@@ -112,13 +141,25 @@ def next_episode(slot: int, force: str | None = None):
         except Exception:
             st = {}
     last = int(st.get("last_index", -1))
+    posted = load_posted()
     if force:
         idx = next((i for i, (t, _s) in enumerate(eps)
                     if t.lower() == force.lower()), None)
         if idx is None:
             eps.append((force, force)); idx = n; n += 1
     else:
-        idx = (last + 1) % n
+        # Walk forward from last_index+1, SKIP any title already generated this
+        # cycle (dedup table). Loop forever without re-posting within a cycle.
+        for step in range(1, n + 1):
+            cand = (last + step) % n
+            if eps[cand][0] not in posted:
+                idx = cand
+                break
+        else:
+            # Entire series already posted — start a fresh cycle.
+            posted.clear()
+            POSTED_REGISTRY.write_text(json.dumps({"titles": [], "cycle": st.get("cycle", 0) + 1}))
+            idx = (last + 1) % n
     title, slug = eps[idx]
     STATE_FILE.write_text(json.dumps({"last_index": idx, "episode": title,
                                       "ts": _dt.datetime.utcnow().isoformat() + "Z"}))
@@ -455,6 +496,7 @@ def main():
              "subject": subject, "slot": args.slot,
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
+    record_posted(subject, args.slot, dest.name)
     print(f"[discovery-gen] STAGED: {dest.name} | caption {len(caption)} chars",
           flush=True)
 
