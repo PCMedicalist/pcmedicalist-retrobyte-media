@@ -2,21 +2,28 @@
 """
 RetroByte — "Discovering 90's Tech" video generator (HOST build step).
 
-Generates a narrated, on-brand RetroByte video about a 90s tech artifact,
-in RetroByte's excited-intern voice, then stages it for the in-container
-retrobyte-cron poster to publish to X / IG / TikTok.
+Generates a VIRAL-STYLE narrated, multi-shot RetroByte video about a 90s tech
+artifact, then stages it for the in-container retrobyte-cron poster to publish
+to X / IG / TikTok.
 
-Pipeline:
+Pipeline (upgraded 2026-09-22):
   1. Pick a 90s-tech subject (rotating, no repeat until cycled).
   2. Narrate it in RetroByte voice via the local retrobyte:3b Ollama model.
-  3. Composite a retro CRT-style frame (PIL: scanlines, neon terminal text).
-  4. Mux to a narrated MP4 via media_clip.build_clip() (burned CC).
-  5. Stage mp4 + caption into the RetroByte media dir; write
-     _discovery_ready.json so the container poster picks it up.
+  3. Build a 3-BEAT montage (NOT a frozen still):
+       beat 1 = HOOK card (bold subject + curiosity line, period CRT backdrop)
+       beat 2 = ARTIFACT hero (real public-domain Wikimedia photo, full-bleed)
+       beat 3 = REACTION/CTA (RetroByte large + sign-off + baseline.click)
+     Each beat gets a subtle Ken-Burns zoom so the clip has motion.
+  4. Mux the beats into one narrated MP4 via mux_video.mux_beats() (timed CC
+     burned across the whole timeline by media_clip's pipeline).
+  5. Stage mp4 + caption; write _discovery_ready.json for the poster.
+
+No more black-void single frames — every episode shows the real artifact and
+cuts between three distinct shots for retention/virality.
 
 Run from host (needs content-os venv: edge-tts + PIL; system ffmpeg; Ollama
-retrobyte:3b). Invoked by a host cron at 07:40 + 19:10 (before the
-container poster fires at 08:00 / 19:30).
+retrobyte:3b). Invoked by a host cron at 11:00 + 20:00 (staggered away from
+PCMedicalist's GPU windows).
 """
 from __future__ import annotations
 
@@ -30,7 +37,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import requests  # stdlib-free; content-os venv has it (or system)
+import requests
 
 # --- Paths ---------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
@@ -38,20 +45,37 @@ MEDIA_DIR = Path("/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/media")
 OUTBOX = HERE / "generated"
 OUTBOX.mkdir(parents=True, exist_ok=True)
 READY_FILE = HERE / "_discovery_ready.json"
+IMG_CACHE = HERE / "img_cache"
+IMG_CACHE.mkdir(parents=True, exist_ok=True)
 
-# --- Authoritative 90s-tech subject sequence (NO repeats) ----------------
-# The curated RetroByte "Discovering Old Tech" episode list lives in the
-# series bible the user authored. We parse the episode titles from there and
-# walk them in order, tracking the last-used episode in _discovery_state.json
-# so we NEVER post the same subject twice until the whole list has cycled.
-# (The old behaviour hashed the date over a 12-item arbitrary list and could
-# repeat / desync — replaced by this deterministic, deduped sequence.)
+# --- Authoritative 90s-tech subject sequence (NO repeats) -----------------
 SERIES_FILES = [
     Path("/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/"
          "RETROBYTE-OLD-TECH-DISCOVERY.md"),
     HERE / "RETROBYTE OLD TECH DISCOVERY.md",  # sync copy fallback
 ]
 STATE_FILE = HERE / "_discovery_state.json"
+
+# --- Real artifact imagery: Wikimedia Commons file title per subject -------
+# Public-domain / freely-licensed photos so the montage shows the ACTUAL
+# gadget (not a mascot on black). Keyed by subject title (case-insensitive).
+WIKIMEDIA_TITLES = {
+    "floppy disk": "File:Floppy_disk_2009_G1.jpg",
+    "walkman": "File:Sony_Walkman_TPS-L2.jpg",
+    "rotary phone": "File:Gpo_746_telephone.jpg",
+    "the game boy": "File:Nintendo-Game-Boy-FL.jpg",
+    "the vhs tape": "File:VHS-Video-Tape.jpg",
+    "the cassette tape": "File:Audio_Cassette.jpg",
+    "the pager": "File:Motorola_Bravo_Pager.jpg",
+    "the tamagotchi": "File:Tamagotchi_original.jpg",
+    "the compact disc": "File:Compact_disc.jpg",
+    "the dial-up modem": "File:USRobotics_Sportster_56K_Courier_modem.jpg",
+    "the camcorder": "File:Sony_Hi8_Camcorder.jpg",
+    "the polaroid camera": "File:Polaroid_sx70.jpg",
+    "the laserdisc": "File:Laserdisc.jpg",
+    "the minidisc": "File:Minidisc_Sony.jpg",
+    "the beeper": "File:Pager_Motorola.jpg",
+}
 
 
 def load_episodes() -> list[tuple[str, str]]:
@@ -62,7 +86,6 @@ def load_episodes() -> list[tuple[str, str]]:
             text = sf.read_text(encoding="utf-8", errors="ignore")
             break
     if not text:
-        # Hard fallback so the pipeline never hard-fails
         return [("Floppy Disk", "the 1.44MB time capsule"),
                 ("Walkman", "music in your pocket"),
                 ("Rotary Phone", "the dial that rang")]
@@ -70,9 +93,7 @@ def load_episodes() -> list[tuple[str, str]]:
     for m in re.finditer(r"^#+\s*(\d{1,3})\s*[—-]\s*(.+)$", text, re.M):
         title = m.group(2).strip()
         eps.append((title, title))
-    # de-dup while preserving order
-    seen = set()
-    out = []
+    seen = set(); out = []
     for t, s in eps:
         if t.lower() in seen:
             continue
@@ -82,13 +103,6 @@ def load_episodes() -> list[tuple[str, str]]:
 
 
 def next_episode(slot: int, force: str | None = None):
-    """Return (title, slug, index) for the next episode to post.
-
-    Walks the curated list in order; two slots/day = two consecutive episodes.
-    A persistent state file records the last-used index so we never repeat
-    until the list cycles. `--force-subject` overrides for debug but must
-    match a real episode (and still advances state consistently).
-    """
     eps = load_episodes()
     n = len(eps)
     st = {}
@@ -102,9 +116,7 @@ def next_episode(slot: int, force: str | None = None):
         idx = next((i for i, (t, _s) in enumerate(eps)
                     if t.lower() == force.lower()), None)
         if idx is None:
-            eps.append((force, force))
-            idx = n
-            n += 1
+            eps.append((force, force)); idx = n; n += 1
     else:
         idx = (last + 1) % n
     title, slug = eps[idx]
@@ -112,8 +124,10 @@ def next_episode(slot: int, force: str | None = None):
                                       "ts": _dt.datetime.utcnow().isoformat() + "Z"}))
     return title, slug, idx
 
+
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "retrobyte:3b"
+
 
 # --- Voice narration via local retrobyte:3b ------------------------------
 def narrate(subject: str, hook: str) -> str:
@@ -133,7 +147,6 @@ def narrate(subject: str, hook: str) -> str:
         )
         if r.ok:
             t = r.json().get("response", "").strip()
-            # strip any stray hashtags/emoji defensively for TTS
             t = re.sub(r"[#@]\w+", "", t)
             t = "".join(ch for ch in t if ord(ch) < 0x2600)
             return t.strip() or f"WAIT... {subject}! {hook}! RetroByte, signing off!"
@@ -142,146 +155,288 @@ def narrate(subject: str, hook: str) -> str:
     return f"WAIT... {subject}! {hook}! RetroByte, signing off!"
 
 
-# --- RetroByte character model (used as the video frame centerpiece) ------
+# --- Wikimedia fetch (cached) ------------------------------------------
+def fetch_artifact(subject: str) -> Path | None:
+    """Return a cached local path to a public-domain photo of the subject, or
+    None if unavailable. Uses Wikimedia Commons API (no key, rate-friendly)."""
+    key = subject.lower().strip()
+    title = None
+    for k, v in WIKIMEDIA_TITLES.items():
+        if k in key or key in k:
+            title = v; break
+    if not title:
+        return None
+    cache = IMG_CACHE / (re.sub(r"[^A-Za-z0-9]+", "_", key) + ".jpg")
+    if cache.exists():
+        return cache
+    try:
+        api = ("https://commons.wikimedia.org/w/api.php?action=query&format=json"
+               "&prop=imageinfo&iiprop=url&titles=" + requests.utils.quote(title))
+        meta = requests.get(api, headers={"User-Agent": "PCMedicalistRetroByte/1.0"},
+                            timeout=25)
+        if not meta.ok or "application/json" not in meta.headers.get("Content-Type", ""):
+            return None
+        meta = meta.json()
+        pages = meta.get("query", {}).get("pages", {})
+        url = None
+        for p in pages.values():
+            ii = (p.get("imageinfo") or [{}])[0]
+            url = ii.get("url")
+            break
+        if not url:
+            return None
+        img = requests.get(url, headers={"User-Agent": "PCMedicalistRetroByte/1.0"},
+                            timeout=40)
+        if img.ok and img.content[:4] in (b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1", b"\x89PNG"):
+            cache.write_bytes(img.content)
+            return cache
+    except Exception as e:
+        print(f"[discovery-gen] artifact fetch fail ({subject}): {e}", file=sys.stderr)
+    return None
+
+
+# --- RetroByte character model ------------------------------------------
 CHARACTER_IMG = Path(
     "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/"
     "retrobyte-video-model.png")
 
-# --- Retro CRT frame (PIL) ----------------------------------------------
-def make_frame(subject: str, hook: str, out_path: Path) -> Path:
-    from PIL import Image, ImageDraw, ImageFont
 
-    W, H = 1080, 1920
-    img = Image.new("RGB", (W, H), (0, 0, 0))  # black bg matches character art
-    d = ImageDraw.Draw(img)
-
-    # Neon-amber terminal vibe
-    amber = (255, 176, 0)
-    green = (120, 255, 140)
-
+def _font(big=True):
+    from PIL import ImageFont
     try:
-        font_big = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
-        font_small = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 38)
+        return ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72 if big else 40)
     except Exception:
-        font_big = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+        return ImageFont.load_default()
 
-    # --- Character model at BOTTOM (speaking the captions above) ----------
-    # media_clip.build_clip() burns the narrated CC into a reserved band at
-    # ~y[844,1056] of the 1920-tall frame (upper-middle). Place RetroByte in
-    # the LOWER portion, BELOW that band, so he reads as the speaker — and keep
-    # him clear of the footer (H-120) and inside the amber border (30..H-30).
-    if CHARACTER_IMG.exists():
-        char = Image.open(CHARACTER_IMG).convert("RGB")
-        cw, ch = char.size
-        # ~55% width keeps him inside the side borders with margin
-        target = int(W * 0.55)
-        try:
-            _resample = Image.Resampling.LANCZOS
-        except AttributeError:
-            _resample = Image.LANCZOS
-        char = char.resize((target, target), _resample)
-        cx = (W - target) // 2
-        # Top below the CC band (1056); bottom must clear footer (~H-120=1800).
-        cy = int(H * 0.58)          # ~1114 -> bottom ~1708, clear of footer
-        img.paste(char, (cx, cy))
-    else:
-        print("[discovery-gen] WARN: character image missing; using text frame",
-              file=sys.stderr)
 
-    # --- Header + subject text (top band, above the character) -----------
-    d.text((60, 90), "RETROBYTE DISCOVERS:", fill=green, font=font_big)
-    words = subject.split()
-    lines, cur = [], ""
+def _paste_char(img, scale=0.55, cy_frac=0.60):
+    if not CHARACTER_IMG.exists():
+        return
+    char = __import__("PIL").Image.open(CHARACTER_IMG).convert("RGB")
+    W, H = img.size
+    target = int(W * scale)
+    try:
+        _rs = __import__("PIL").Image.Resampling.LANCZOS
+    except AttributeError:
+        _rs = __import__("PIL").Image.LANCZOS
+    char = char.resize((target, target), _rs)
+    cx = (W - target) // 2
+    cy = int(H * cy_frac)
+    img.paste(char, (cx, cy))
+
+
+def make_hook_frame(subject: str, hook: str, out_path: Path) -> Path:
+    """BEAT 1 — bold HOOK card on a period-CRT gradient (NO black void)."""
+    from PIL import Image, ImageDraw
+    W, H = 1080, 1920
+    # CRT gradient backdrop instead of flat black.
+    base = Image.new("RGB", (W, H), (12, 8, 26))
+    px = base.load()
+    for y in range(H):
+        # deep indigo top -> warm amber-tinted bottom
+        t = y / H
+        r = int(12 + t * 60); g = int(8 + t * 30); b = int(26 + t * 10)
+        for x in range(0, W, 4):
+            px[x, y] = (r, g, b)
+    d = ImageDraw.Draw(base)
+    amber = (255, 176, 0); green = (120, 255, 140)
+    fbig = _font(True); fsmall = _font(False)
+    d.text((60, 120), "RETROBYTE DISCOVERS:", fill=green, font=fbig)
+    # subject, wrapped to <=14 chars/line
+    words = subject.split(); lines, cur = [], ""
     for w in words:
-        if len(cur + " " + w) > 16:
+        if len(cur + " " + w) > 14:
             lines.append(cur.strip()); cur = w
         else:
             cur = (cur + " " + w).strip()
-    if cur:
-        lines.append(cur)
-    y = 230
+    if cur: lines.append(cur)
+    y = 280
     for ln in lines:
-        d.text((60, y), ln, fill=amber, font=font_big)
-        y += 100
-
-    # NOTE: the spoken narration is burned as timed closed-captions by
-    # media_clip.build_clip() in its OWN reserved band (lower third). We do
-    # NOT draw the hook here — doing so collided with that CC band + footer.
-    # Scanlines + border + footer only below.
-
-    # --- Scanlines overlay (retro CRT feel) ------------------------------
-    for y2 in range(0, H, 6):
-        d.rectangle([0, y2, W, y2 + 2], fill=(0, 0, 0))
-
-    # --- Glow border + footer -------------------------------------------
+        d.text((60, y), ln, fill=amber, font=fbig); y += 110
+    # curiosity hook line
+    d.text((60, y + 30), hook[:42], fill=(220, 220, 255), font=fsmall)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
-    d.text((60, H - 120), "PCMedicalist · baseline.click",
-           fill=amber, font=font_small)
+    d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
+    base.save(out_path)
+    return out_path
 
+
+def make_artifact_frame(subject: str, out_path: Path) -> Path:
+    """BEAT 2 — real artifact photo full-bleed with neon frame + RetroByte."""
+    from PIL import Image, ImageDraw
+    W, H = 1080, 1920
+    art = fetch_artifact(subject)
+    img = Image.new("RGB", (W, H), (18, 14, 34))
+    if art and art.exists():
+        try:
+            ph = __import__("PIL").Image.open(art).convert("RGB")
+            try:
+                _rs = __import__("PIL").Image.Resampling.LANCZOS
+            except AttributeError:
+                _rs = __import__("PIL").Image.LANCZOS
+            # cover-fit top 78% (leave lower band for RetroByte)
+            ph = ph.resize((W, int(H * 0.78)), _rs)
+            img.paste(ph, (0, 0))
+        except Exception:
+            pass
+    d = ImageDraw.Draw(img)
+    amber = (255, 176, 0)
+    d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
+    _paste_char(img, scale=0.42, cy_frac=0.80)  # RetroByte lower, reacting
+    d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber,
+           font=_font(False))
     img.save(out_path)
     return out_path
 
 
-# --- video build via media_clip -----------------------------------------
-def build_video(narration: str, frame_path: Path, out_path: Path) -> str | None:
-    # Import media_clip from the PCMedicalist social pipelines dir
+def make_reaction_frame(subject: str, out_path: Path) -> Path:
+    """BEAT 3 — RetroByte LARGE + sign-off + CTA (the "wow" closer)."""
+    from PIL import Image, ImageDraw
+    W, H = 1080, 1920
+    img = Image.new("RGB", (W, H), (8, 10, 28))
+    d = ImageDraw.Draw(img)
+    amber = (255, 176, 0); green = (120, 255, 140)
+    d.text((60, 140), "WAIT... IS THIS REAL?!", fill=green, font=_font(True))
+    _paste_char(img, scale=0.70, cy_frac=0.42)  # big RetroByte center
+    d.text((60, H - 260), "Discover 90s tech with RetroByte", fill=amber,
+           font=_font(False))
+    d.text((60, H - 200), "on the baseLINE Twitch extension -> baseline.click",
+           fill=amber, font=_font(False))
+    d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
+    img.save(out_path)
+    return out_path
+
+
+def build_montage(narration: str, frames: list[Path], audio_path: Path,
+                  out_path: Path) -> str | None:
     pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
                      "pcmedicalist-social-publisher/pipelines")
     sys.path.insert(0, str(pipelines))
     import media_clip as mc
+    # Split the narration duration across 3 beats (hook ~25%, artifact ~50%,
+    # reaction ~25%) so the artifact hero gets the most screen time.
+    dur = mc._audio_duration(audio_path)
+    dur = max(12.0, min(60.0, dur))
+    # Split the narration into 3 proportional slices so each beat carries its own
+    # CC (cleaner than one global CC timeline across concatenated clips).
+    words = narration.split()
+    n = len(words)
+    i1 = max(1, int(n * 0.25)); i2 = max(i1 + 1, int(n * 0.75))
+    slice0 = " ".join(words[:i1]); slice1 = " ".join(words[i1:i2]); slice2 = " ".join(words[i2:])
+    # start offsets + durations per beat (proportional to narration)
+    bdurs = [dur * 0.25, dur * 0.50, dur * 0.25]
+    bscripts = [slice0, slice1, slice2]
+    bstarts = [0.0, bdurs[0], bdurs[0] + bdurs[1]]
     try:
-        clip = mc.build_clip(narration, frame_path, out_path,
-                             voice="en-US-AnaNeural", is_reel=True)
-        if clip.get("ok") and clip.get("parts"):
-            return str(Path(clip["parts"][0]["path"]))
+        from mux_video import mux_reel
+    except Exception:
+        sys.path.insert(0, str(Path.home() / "pcmedicalist" /
+                              "pcmedicalist-content-os" / "generators"))
+        from mux_video import mux_reel
+    ffmpeg = shutil.which("ffmpeg")
+    # 1) Render each beat to its own short MP4 (sliced audio + Ken-Burns + CC).
+    beat_mp4s = []
+    for i, (img, bdur, bscript, bstart) in enumerate(
+            zip(frames, bdurs, bscripts, bstarts)):
+        bmp4 = out_path.with_name(out_path.stem + f"_b{i}.mp4")
+        baudio = out_path.with_name(out_path.stem + f"_ba{i}.mp3")
+        sl = subprocess.run([ffmpeg, "-y", "-ss", f"{bstart:.2f}",
+                             "-t", f"{bdur:.2f}", "-i", str(audio_path),
+                             "-c", "copy", str(baudio)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=60)
+        if not Path(baudio).exists():
+            print(f"[discovery-gen] beat {i} audio slice fail", file=sys.stderr)
+            return None
+        br = mux_reel(img, baudio, bmp4, ken_burns=True, script=bscript,
+                     captions=True)
+        if not br.get("ok") or not Path(bmp4).exists():
+            print(f"[discovery-gen] beat {i} render fail: {br.get('error')}",
+                  file=sys.stderr)
+            return None
+        beat_mp4s.append(bmp4)
+    # 2) Concatenate the beat MP4s via the concat DEMUXER (rock-solid on this
+    #    ffmpeg build; the filtergraph concat was unreliable).
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    concat_list = out_path.with_name(out_path.stem + "_concat.txt")
+    concat_list.write_text("\n".join(f"file '{p.resolve()}'" for p in beat_mp4s))
+    cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
+           "-c", "copy", str(out_path)]
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, check=False, timeout=120)
+        if r.returncode != 0 or not Path(out_path).exists():
+            print(f"[discovery-gen] concat fail: {(r.stderr or '')[-400:]}",
+                  file=sys.stderr)
+            return None
     except Exception as e:
-        print(f"[discovery-gen] build_clip fail: {e}", file=sys.stderr)
-    return None
+        print(f"[discovery-gen] concat exc: {e}", file=sys.stderr)
+        return None
+    # cleanup intermediate beat clips
+    for p in beat_mp4s + [concat_list]:
+        try: p.unlink()
+        except Exception: pass
+    return str(out_path)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--slot", type=int, default=0, choices=[0, 1])
-    ap.add_argument("--force-subject", default=None,
-                    help="Force a specific episode title (debug). Must match a "
-                         "title in the series bible; advances state like normal.")
+    ap.add_argument("--force-subject", default=None)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--test-render", action="store_true",
+                    help="Render only (no staging / no state advance).")
     args = ap.parse_args()
 
-    # Walk the curated episode sequence in order (deduped, never repeats
-    # until the list cycles). --force-subject overrides for one-off debug.
     subject, hook, ep_idx = next_episode(args.slot, args.force_subject)
     print(f"[discovery-gen] episode#{ep_idx + 1} subject={subject} slot={args.slot}",
           flush=True)
 
     stamp = _dt.date.today().strftime("%Y-%m-%d") + f"-d{args.slot}"
-    frame = OUTBOX / f"disc_frame_{stamp}.png"
+    f_hook = OUTBOX / f"disc_frame_{stamp}_hook.png"
+    f_art = OUTBOX / f"disc_frame_{stamp}_art.png"
+    f_react = OUTBOX / f"disc_frame_{stamp}_react.png"
     video = OUTBOX / f"disc_video_{stamp}.mp4"
 
-    print(f"[discovery-gen] subject={subject} slot={args.slot}", flush=True)
     narration = narrate(subject, hook)
     print(f"[discovery-gen] narration: {narration[:80]}...", flush=True)
 
-    make_frame(subject, hook, frame)
-    if args.dry_run:
-        print(f"[discovery-gen] DRY-RUN: frame={frame} (video not built)")
+    make_hook_frame(subject, hook, f_hook)
+    make_artifact_frame(subject, f_art)
+    make_reaction_frame(subject, f_react)
+    frames = [f_hook, f_art, f_react]
+
+    if args.dry_run or args.test_render:
+        print(f"[discovery-gen] {'TEST' if args.test_render else 'DRY'}-RUN: "
+              f"frames={[f.name for f in frames]} (video not built)")
+        if args.test_render:
+            # still build a sample for visual QA
+            pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
+                             "pcmedicalist-social-publisher/pipelines")
+            sys.path.insert(0, str(pipelines))
+            import media_clip as mc
+            mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
+            vr = mc._tts(narration, str(mp3), voice="en-US-AnaNeural")
+            if vr.get("ok"):
+                build_montage(narration, frames, mp3, video)
+                print(f"[discovery-gen] TEST VIDEO: {video}")
         return
 
-    video_path = build_video(narration, frame, video)
+    mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
+    import media_clip as mc
+    vr = mc._tts(narration, str(mp3), voice="en-US-AnaNeural")
+    if not vr.get("ok") or not mp3.exists():
+        print("[discovery-gen] TTS FAILED — not staging", file=sys.stderr)
+        sys.exit(1)
+
+    video_path = build_montage(narration, frames, mp3, video)
     if not video_path:
         print("[discovery-gen] video build FAILED — not staging", file=sys.stderr)
         sys.exit(1)
 
-    # Stage into BOTH locations:
-    #  - HERE/media  = pcmedicalist-retrobyte-media repo, which MEDIA_BASE_URL
-    #    serves via GitHub raw (the SAME repo the 18 random clips live in and
-    #    which Buffer fetches from). MUST be git-pushed by the host cron so the
-    #    raw URL resolves (404 otherwise — this was the first end-to-end failure).
-    #  - agent media dir: kept as a local mirror so any local existence check
-    #    (MEDIA_DIR) still passes inside the container.
     repo_media = HERE / "media"
     repo_media.mkdir(parents=True, exist_ok=True)
     dest = repo_media / Path(video_path).name
@@ -293,17 +448,15 @@ def main():
     except Exception as _ce:
         print(f"[discovery-gen] agent-mirror skip: {_ce}", file=sys.stderr)
 
-    caption = f"{narration}\n\n#RetroByte #90sTech #PCMedicalist\nDiscover 90s tech with RetroByte on the baseLINE Twitch extension → baseline.click"
-    ready = {
-        "video": str(dest),
-        "video_name": dest.name,
-        "caption": caption,
-        "subject": subject,
-        "slot": args.slot,
-        "ts": _dt.datetime.utcnow().isoformat() + "Z",
-    }
+    caption = (f"{narration}\n\n#RetroByte #90sTech #PCMedicalist\n"
+               "Discover 90s tech with RetroByte on the baseLINE Twitch extension "
+               "→ baseline.click")
+    ready = {"video": str(dest), "video_name": dest.name, "caption": caption,
+             "subject": subject, "slot": args.slot,
+             "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
-    print(f"[discovery-gen] STAGED: {dest.name} | caption {len(caption)} chars", flush=True)
+    print(f"[discovery-gen] STAGED: {dest.name} | caption {len(caption)} chars",
+          flush=True)
 
 
 if __name__ == "__main__":
