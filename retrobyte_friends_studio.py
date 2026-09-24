@@ -45,7 +45,15 @@ def next_episode(offset: int = 0) -> tuple[str, int, str]:
     return title, slot, narration
 
 
-def make_backdrop(out: Path) -> Path:
+ROOM_BGS = sorted(BRAND_DIR.glob("retro_room_bg*.png"))  # multiple rotating backgrounds
+
+
+def make_backdrop(out: Path, slot: int = 0) -> Path:
+    if ROOM_BGS:
+        bg = ROOM_BGS[slot % len(ROOM_BGS)]
+        shutil.copy(bg, out)
+        return out
+    # fallback: solid navy grid
     cached = GENERATED / "backdrop_cache.png"
     if cached.exists():
         shutil.copy(cached, out)
@@ -133,7 +141,7 @@ def main():
         print("[studio] --no-render; aborting")
         return
 
-    backdrop = make_backdrop(GENERATED / f"{slug(title)}_bg.png")
+    backdrop = make_backdrop(GENERATED / f"{slug(title)}_bg.png", slot=slot)
     hook = make_hook_filter(title)
     variants = build_friends_composite(title, friend, backdrop, hook)
 
