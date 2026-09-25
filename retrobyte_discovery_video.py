@@ -614,6 +614,60 @@ def main():
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
     record_posted(subject, args.slot, dest.name)
+
+    # ---- Persist staged media to the git remote so raw.githubusercontent.com
+    #      can serve it to Buffer's shareNow. Without this the video exists
+    #      locally but 404s on the raw URL (the bug that broke Sep 22-24 posts).
+    #      Only stage + commit files that are actually NEW/CHANGED — never
+    #      rewrite history or clobber other agents' uploads.
+    _stage = dest.name
+    _ok = True
+    if _stage not in ("", None):
+        try:
+            _rc = subprocess.run(
+                ["git", "add", _stage],
+                cwd=str(HERE), capture_output=True, text=True, timeout=30)
+            if _rc.returncode != 0:
+                print(f"[discovery-gen] git add {_stage} failed: {_rc.stderr.strip()[-200:]}",
+                      file=sys.stderr); _ok = False
+        except Exception as _e:
+            print(f"[discovery-gen] git add exc: {_e}", file=sys.stderr); _ok = False
+    if _ok and subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "--"],
+            cwd=str(HERE), capture_output=True, timeout=15).returncode == 0:
+        # Nothing new to commit after the add (already tracked + unchanged).
+        print(f"[discovery-gen] media tracked, no new commit needed", flush=True)
+    elif _ok:
+        try:
+            _msg = (f"feat(discovery): {subject.lower()} — d{args.slot} narrated video "
+                    f"({_dt.date.today().isoformat()})\n"
+                    f"\nCo-Authored-By: PCMedicalist <noreply@pcmedicalist.com>")
+            _rc = subprocess.run(
+                ["git", "commit", "-m", _msg],
+                cwd=str(HERE), capture_output=True, text=True, timeout=60)
+            if _rc.returncode != 0:
+                print(f"[discovery-gen] git commit failed: {_rc.stderr.strip()[-200:]}",
+                      file=sys.stderr); _ok = False
+            else:
+                print(f"[discovery-gen] committed: {_rc.stdout.strip().splitlines()[-1]}",
+                      flush=True)
+        except Exception as _e:
+            print(f"[discovery-gen] git commit exc: {_e}", file=sys.stderr); _ok = False
+    if _ok:
+        try:
+            _pr = subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=str(HERE), capture_output=True, text=True, timeout=120)
+            if _pr.returncode != 0:
+                print(f"[discovery-gen] git push WARN (non-fatal): {_pr.stderr.strip()[-200:]}",
+                      file=sys.stderr)
+            else:
+                _ln = _pr.stdout.strip().splitlines()
+                print(f"[discovery-gen] pushed: {_ln[-1] if _ln else 'ok'}", flush=True)
+        except Exception as _e:
+            print(f"[discovery-gen] git push exc: {_e}", file=sys.stderr)
+    # ---- end persist-to-git ----
+
     print(f"[discovery-gen] STAGED: {dest.name} | caption {len(caption)} chars",
           flush=True)
 
