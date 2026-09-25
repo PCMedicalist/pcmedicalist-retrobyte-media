@@ -677,7 +677,15 @@ def main():
     #      locally but 404s on the raw URL (the bug that broke Sep 22-24 posts).
     #      Only stage + commit files that are actually NEW/CHANGED — never
     #      rewrite history or clobber other agents' uploads.
-    _stage = dest.name
+    #      NOTE: `dest` is the full absolute repo path (e.g.
+    #      /home/.../media/disc_video_....mp4). git add -C "$HERE" needs the
+    #      repo-relative form (e.g. media/disc_video_....mp4), so strip the
+    #      HERE prefix.
+    _stage = str(dest)
+    if _stage.startswith(str(HERE) + os.sep):
+        _stage = _stage[len(str(HERE)) + 1:]
+    elif _stage.startswith(str(HERE)):
+        _stage = _stage[len(str(HERE)):]
     _ok = True
     if _stage not in ("", None):
         try:
