@@ -349,11 +349,59 @@ def make_reaction_frame(subject: str, out_path: Path) -> Path:
     return out_path
 
 
+def _probe_ok_for_reels(path: Path) -> bool:
+    """Return True if the clip meets Instagram Reels + TikTok minimums:
+    >=3s duration, >=23 fps, >=360px height (TikTok both 9:16 and 1:1 need >=360px)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration:stream=avg_frame_rate,height",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return False
+        lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+        if not lines:
+            return False
+        dur = float(lines[0])
+        # avg_frame_rate may be like "30/1" or "29.97"
+        fps_raw = lines[1] if len(lines) > 1 else "0"
+        if "/" in fps_raw:
+            num, den = fps_raw.split("/", 1)
+            fps = float(num) / (float(den) if float(den) else 1.0)
+        else:
+            fps = float(fps_raw)
+        h = int(lines[2].split(",")[0]) if len(lines) > 2 and "," in lines[2] else None
+        if h is None:
+            # try per-stream height line
+            for ln in lines[1:]:
+                if ln.replace("/", "").replace(".", "").isdigit():
+                    continue
+                parts = ln.split(",")
+                for p in parts:
+                    pv = p.strip()
+                    if pv.isdigit() and int(pv) > 0:
+                        h = int(pv); break
+                if h:
+                    break
+        print(f"[discovery-gen] probe: dur={dur:.2f}s fps={fps:.2f} h={h}",
+              file=sys.stderr)
+        return dur >= 3.0 and fps >= 23 and (h or 0) >= 360
+    except Exception as e:
+        print(f"[discovery-gen] probe exc: {e}", file=sys.stderr)
+        return False
+
+
 def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | None:
     """Generate REAL motion video via the sovereign T2VZ wrapper (no pan/still).
 
     The narration becomes the video prompt so RetroByte + the gadget are
     generated as genuine diffusion motion. Returns the clip path or None.
+
+    Output must meet Instagram Reels + TikTok minimums (>=3s, >=23fps,
+    >=360px height) or we fall back to the still-frame montage path, which
+    posts reliably to all three channels. The old --frames 8 --fps 8 config
+    produced a 1s clip that Reels/TikTok both rejected.
     """
     from PIL import Image
     # Build a RetroByte-flavored T2V prompt from the narration + subject.
@@ -370,13 +418,22 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
         return None
     base = out_path.with_name(out_path.stem + "_t2v.mp4")
     try:
+        # 3s @ 24fps = 72 frames minimum to clear Reels (>=3s + >=23fps) and
+        # TikTok (>=3s + >=360px). Use 30fps for headroom above the 23fps floor.
         r = subprocess.run(
             [str(venv_py), str(t2vz), "--prompt", prompt, "--out", str(base),
-             "--steps", "25", "--frames", "8", "--size", "320*576", "--fps", "8"],
+             "--steps", "25", "--frames", "96", "--size", "576*576", "--fps", "30"],
             capture_output=True, text=True, timeout=600)
         if r.returncode != 0 or not base.exists():
             print(f"[discovery-gen] t2vz fail: {(r.stderr or r.stdout)[-400:]}",
                   file=sys.stderr)
+            return None
+        # Validate platform minimums — fall back to montage if T2VZ still came
+        # out too short/low-res (T2VZ is an 11GB VRAM squeeze on the 2060, so the
+        # recipe can produce marginal clips; montage is the safe posting path).
+        if not _probe_ok_for_reels(base):
+            print("[discovery-gen] T2VZ clip below platform minimums — "
+                  "falling back to montage", file=sys.stderr)
             return None
         return str(base)
     except Exception as e:
