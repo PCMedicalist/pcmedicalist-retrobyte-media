@@ -90,8 +90,11 @@ python3 "$POSTER" --slot "$POST_SLOT" 2>&1 | tail -12
 # 'sent'. shareNow already confirmed acceptance (the poster got 3x PostActionSuccess
 # IDs), so a 'sending' status on a recent post IS a success — we just wait longer
 # and accept either state. Previously a 25s wait + 'sent'-only check produced a
-# FALSE failure (exit 4) even though the post landed.
-sleep 60
+# FALSE failure (exit 4) even though the post landed. 2026-09-26: window widened
+# to 120s AND null-sentAt 'sending' posts now count as recent (Buffer only sets
+# sentAt once fully sent — tonight's TikTok 'sending' had NO sentAt and was
+# falsely flagged despite having just been accepted).
+sleep 120
 python3 - "$TOK" <<'PY' || { OWNER_ALERT "post-verify could not run — manual check needed."; exit 4; }
 import sys, json, urllib.request
 from datetime import datetime, timezone
@@ -119,7 +122,11 @@ for svc in want:
     status=n.get('status')
     # 'sent' is final success; 'sending' is accepted-but-uploading (also success
     # for a post we just issued via shareNow). Only a stale/old post fails.
-    recent = n.get('sentAt') and (now - datetime.fromisoformat(n['sentAt'].replace('Z','+00:00'))).total_seconds() < 600
+    # Buffer may leave sentAt NULL while still 'sending' — treat that as recent
+    # (we only just issued this post moments ago).
+    recent = status == 'sending'
+    if not recent and n.get('sentAt'):
+        recent = (now - datetime.fromisoformat(n['sentAt'].replace('Z','+00:00'))).total_seconds() < 600
     if status not in ('sent','sending') or not recent:
         missing.append(f"{svc}:{status}")
 if missing:
