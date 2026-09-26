@@ -405,7 +405,7 @@ def make_hook_frame(subject: str, hook: str, out_path: Path,
         # sprite foot overlapped 'baseline.click'). 367px sprite: bottom
         # lands at 1920-367-190=1363, well clear of the CTA band (~1770).
         _lift = 190
-        _paste_char_lifted(base, scale=0.34, ep_idx=ep_idx, lift=_lift)
+        _paste_char_lifted(base, scale=0.52, ep_idx=ep_idx, lift=_lift)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
     d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
     base.save(out_path)
@@ -442,7 +442,7 @@ def make_artifact_frame(subject: str, out_path: Path,
     # BEAT 2 caption line (replaces the beat-1 hook text)
     d.text((60, y + 30), "LOOK AT THIS THING!", fill=(220, 220, 255), font=fsmall)
     if ep_idx is not None:
-        _paste_char_lifted(base, scale=0.34, ep_idx=ep_idx, lift=190)
+        _paste_char_lifted(base, scale=0.52, ep_idx=ep_idx, lift=190)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
     d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
     base.save(out_path)
@@ -474,7 +474,7 @@ def make_reaction_frame(subject: str, out_path: Path,
     # BEAT 3 caption line (the wow closer)
     d.text((60, y + 30), "WAIT... IS THIS REAL?!", fill=(220, 220, 255), font=fsmall)
     if ep_idx is not None:
-        _paste_char_lifted(base, scale=0.34, ep_idx=ep_idx, lift=190)
+        _paste_char_lifted(base, scale=0.52, ep_idx=ep_idx, lift=190)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
     d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
     base.save(out_path)
@@ -593,7 +593,7 @@ def brand_overlay(clip_path: Path, out_path: Path,
         r = subprocess.run(
             [ffmpeg, "-y", "-i", str(clip_path), "-i", str(char),
              "-filter_complex",
-             "[1:v]scale=iw*0.38:-1[w];[0:v][w]overlay=W*0.04:H-h-(H*0.04)",
+             "[1:v]scale=iw*0.52:-1[w];[0:v][w]overlay=W*0.04:H-h-(H*0.04)",
              "-c:a", "copy", str(out_path)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
         if r.returncode == 0 and out_path.exists():
