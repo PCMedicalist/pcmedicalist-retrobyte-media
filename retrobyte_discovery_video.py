@@ -663,9 +663,24 @@ def main():
     except Exception as _ce:
         print(f"[discovery-gen] agent-mirror skip: {_ce}", file=sys.stderr)
 
+    # Caption must fit X's 280-char limit on ALL channels. Buffer weights
+    # multibyte chars (emoji, →, em-dash) and a 271-char caption was still
+    # rejected 2026-09-25, so cap the staged caption at 240 chars: build the
+    # full text, then truncate the narration body (never the CTA/hashtags)
+    # with word-boundary + ellipsis until it fits.
     caption = (f"{narration}\n\n#RetroByte #90sTech #PCMedicalist\n"
                "Discover 90s tech with RetroByte on the baseLINE Twitch extension "
                "→ baseline.click")
+    CAPTION_MAX = 240
+    if len(caption) > CAPTION_MAX:
+        _suffix = "\n\n#RetroByte #90sTech #PCMedicalist\n" \
+                  "Discover 90s tech with RetroByte on the baseLINE Twitch extension " \
+                  "→ baseline.click"
+        _head_room = CAPTION_MAX - len(_suffix)
+        _body = narration[:_head_room - 1].rsplit(None, 1)[0].rstrip(" ,.!") + "…"
+        caption = _body + _suffix
+    assert len(caption) <= CAPTION_MAX, (
+        f"staged caption {len(caption)} chars exceeds {CAPTION_MAX}")
     ready = {"video": str(dest), "video_name": dest.name, "caption": caption,
              "subject": subject, "slot": args.slot,
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}

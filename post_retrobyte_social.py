@@ -367,14 +367,25 @@ def main():
                         print(f"[{args.slot}] WARN: channel '{svc}' not connected; skipping",
                               file=sys.stderr)
                         continue
-                    # X/Twitter hard-limits captions to 280 chars; clamp with a
-                    # safety margin (Buffer counts some chars toward the limit,
-                    # and the em-dash/arrow widen it). Always trim to <=275 for X.
+                    # X/Twitter hard-limits captions to 280 chars and Buffer
+                    # WEIGHTS multibyte chars — a 271-char caption was still
+                    # rejected 2026-09-25. Clamp at 260 and also replace the
+                    # weighted '→' for X only. If Buffer still rejects with a
+                    # length error, retry once with a hard 200-char cut.
                     _cap = dcaption
-                    if svc == "twitter" and len(dcaption) > 275:
-                        _cap = dcaption[:272].rsplit(None, 1)[0] + "…"
+                    if svc == "twitter" and len(dcaption) > 260:
+                        _cap = dcaption[:257].rsplit(None, 1)[0] + "…"
+                    if svc == "twitter":
+                        _cap = _cap.replace("→", "->")
                     res = create_post(token, ch["id"], _cap, media_url, svc)
                     tn = res.get("__typename")
+                    if tn != "PostActionSuccess" and svc == "twitter" \
+                            and "280" in str(res.get("message", "")):
+                        _cap = _cap[:197].rsplit(None, 1)[0] + "…"
+                        print(f"[{args.slot}] twitter: length reject — retrying at "
+                              f"{len(_cap)} chars")
+                        res = create_post(token, ch["id"], _cap, media_url, svc)
+                        tn = res.get("__typename")
                     results[svc] = (
                         f"OK id={res.get('post', {}).get('id')}"
                         if tn == "PostActionSuccess"
@@ -410,6 +421,9 @@ def main():
     print(f"[{args.slot}] video: {video}")
     print(f"[{args.slot}] media_url: {media_url}")
     caption = generate_caption(theme, hashtag, cta)
+    # Fallback path clamp: X rejects >280 weighted chars (see discovery clamp).
+    if len(caption) > 260:
+        caption = caption[:257].rsplit(None, 1)[0] + "…"
     print(f"[{args.slot}] caption: {caption}")
 
     if args.dry_run:
