@@ -398,6 +398,16 @@ def main():
                     # reposts it even if the ready flag lingers or regenerates.
                     posted_episodes.add(dep_key)
                     state["posted_episodes"] = sorted(posted_episodes)
+                    # Append history so the dead-cycle detector's PRIMARY
+                    # signal stays fresh (2026-09-25: history was stale since
+                    # Sep 18 because only the fallback path appended — the
+                    # detector was running on its posted_episodes fallback).
+                    state.setdefault("history", []).append({
+                        "video": dvideo, "caption": dcaption,
+                        "slot": args.slot, "episode": dep_key,
+                        "results": results,
+                        "ts": datetime.datetime.utcnow().isoformat() + "Z"
+                    })
                     save_state(state)
                     try:
                         ready.unlink()
