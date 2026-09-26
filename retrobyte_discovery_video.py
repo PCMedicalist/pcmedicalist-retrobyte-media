@@ -414,52 +414,70 @@ def make_hook_frame(subject: str, hook: str, out_path: Path,
 
 def make_artifact_frame(subject: str, out_path: Path,
                         ep_idx: int | None = None) -> Path:
-    """BEAT 2 — real artifact photo full-bleed with neon frame + cast member."""
+    """BEAT 2 — SAME hook-card layout as beat 1 (consistent production).
+
+    2026-09-25 operator note: the 3 different card layouts read as "breaking
+    with each scene adjustment" — the operator liked the hook-card look, so
+    beats 2 and 3 now reuse it verbatim and only the caption line changes.
+    """
     from PIL import Image, ImageDraw
     W, H = 1080, 1920
-    art = fetch_artifact(subject)
-    img = (_bg_base((W, H), ep_idx, scrim=0.25) if ep_idx is not None
-           else Image.new("RGB", (W, H), (18, 14, 34)))
-    if art and art.exists():
-        try:
-            ph = __import__("PIL").Image.open(art).convert("RGB")
-            try:
-                _rs = __import__("PIL").Image.Resampling.LANCZOS
-            except AttributeError:
-                _rs = __import__("PIL").Image.LANCZOS
-            # cover-fit top 78% (leave lower band for RetroByte)
-            ph = ph.resize((W, int(H * 0.78)), _rs)
-            img.paste(ph, (0, 0))
-        except Exception:
-            pass
-    d = ImageDraw.Draw(img)
-    amber = (255, 176, 0)
+    base = (_bg_base((W, H), ep_idx, scrim=0.55) if ep_idx is not None
+            else Image.new("RGB", (W, H), (12, 8, 26)))
+    d = ImageDraw.Draw(base)
+    amber = (255, 176, 0); green = (120, 255, 140)
+    fbig = _font(True); fsmall = _font(False)
+    d.text((60, 120), "RETROBYTE DISCOVERS:", fill=green, font=fbig)
+    # subject, wrapped to <=14 chars/line (identical block to beat 1)
+    words = subject.split(); lines, cur = [], ""
+    for w in words:
+        if len(cur + " " + w) > 14:
+            lines.append(cur.strip()); cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    if cur: lines.append(cur)
+    y = 280
+    for ln in lines:
+        d.text((60, y), ln, fill=amber, font=fbig); y += 110
+    # BEAT 2 caption line (replaces the beat-1 hook text)
+    d.text((60, y + 30), "LOOK AT THIS THING!", fill=(220, 220, 255), font=fsmall)
+    if ep_idx is not None:
+        _paste_char_lifted(base, scale=0.34, ep_idx=ep_idx, lift=190)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
-    _paste_char(img=img, scale=0.42, cy_frac=0.80, ep_idx=ep_idx,
-                lift_px=220)  # bottom 1769, in-bounds + fully clears CTA band (~1770)
-    d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber,
-           font=_font(False))
-    img.save(out_path)
+    d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
+    base.save(out_path)
     return out_path
 
 
 def make_reaction_frame(subject: str, out_path: Path,
                         ep_idx: int | None = None) -> Path:
-    """BEAT 3 — cast member LARGE + sign-off + CTA (the "wow" closer)."""
+    """BEAT 3 — SAME hook-card layout as beats 1-2 (consistent production)."""
     from PIL import Image, ImageDraw
     W, H = 1080, 1920
-    img = (_bg_base((W, H), ep_idx, scrim=0.45) if ep_idx is not None
-           else Image.new("RGB", (W, H), (8, 10, 28)))
-    d = ImageDraw.Draw(img)
+    base = (_bg_base((W, H), ep_idx, scrim=0.55) if ep_idx is not None
+            else Image.new("RGB", (W, H), (12, 8, 26)))
+    d = ImageDraw.Draw(base)
     amber = (255, 176, 0); green = (120, 255, 140)
-    d.text((60, 140), "WAIT... IS THIS REAL?!", fill=green, font=_font(True))
-    _paste_char(img=img, scale=0.70, cy_frac=0.42, ep_idx=ep_idx)  # big center
-    d.text((60, H - 260), "Discover 90s tech with RetroByte", fill=amber,
-           font=_font(False))
-    d.text((60, H - 200), "on the baseLINE Twitch extension -> baseline.click",
-           fill=amber, font=_font(False))
+    fbig = _font(True); fsmall = _font(False)
+    d.text((60, 120), "RETROBYTE DISCOVERS:", fill=green, font=fbig)
+    # subject, wrapped to <=14 chars/line (identical block to beat 1)
+    words = subject.split(); lines, cur = [], ""
+    for w in words:
+        if len(cur + " " + w) > 14:
+            lines.append(cur.strip()); cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    if cur: lines.append(cur)
+    y = 280
+    for ln in lines:
+        d.text((60, y), ln, fill=amber, font=fbig); y += 110
+    # BEAT 3 caption line (the wow closer)
+    d.text((60, y + 30), "WAIT... IS THIS REAL?!", fill=(220, 220, 255), font=fsmall)
+    if ep_idx is not None:
+        _paste_char_lifted(base, scale=0.34, ep_idx=ep_idx, lift=190)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
-    img.save(out_path)
+    d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
+    base.save(out_path)
     return out_path
 
 
