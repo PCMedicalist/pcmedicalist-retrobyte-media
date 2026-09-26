@@ -241,6 +241,124 @@ CHARACTER_IMG = Path(
     "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/"
     "retrobyte-video-model.png")
 
+# ---- 2026-09-25: rotating cast + backgrounds (operator directive) ----------
+# Foreground: 18 agent sprites (RGBA, transparent, ~330-363px) in brand/agents/.
+# Background: 35 FLUX2 room backdrops (1024x576) in brand/backgrounds/.
+# Per-episode pick is deterministic from the episode index so the same episode
+# always renders the same character/room, and consecutive episodes rotate both.
+AGENTS_DIR = Path(
+    "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/agents")
+BACKGROUNDS_DIR = Path(
+    "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/backgrounds")
+
+
+def _rotating_asset(directory: Path, idx: int) -> Path | None:
+    """Deterministically pick directory-sorted asset #idx (wraps)."""
+    try:
+        files = sorted(p for p in directory.glob("*.png"))
+    except Exception:
+        return None
+    if not files:
+        return None
+    return files[idx % len(files)]
+
+
+def episode_character(ep_idx: int) -> Path | None:
+    return _rotating_asset(AGENTS_DIR, ep_idx)
+
+
+def episode_background(ep_idx: int) -> Path | None:
+    return _rotating_asset(BACKGROUNDS_DIR, ep_idx)
+
+
+def _load_char_rgba(ep_idx: int) -> "Image.Image | None":
+    """Load the episode's agent sprite as RGBA (transparent foreground)."""
+    p = episode_character(ep_idx)
+    if not p or not p.exists():
+        return None
+    try:
+        c = __import__("PIL").Image.open(p).convert("RGBA")
+        return c
+    except Exception:
+        return None
+
+
+def _paste_char(img, scale=0.55, cy_frac=0.60, ep_idx: int | None = None,
+                bottom_center: bool = False, lift_px: int = 0):
+    """Paste the agent sprite with ALPHA (replaces the old RGB square paste).
+
+    ep_idx=None falls back to the legacy CHARACTER_IMG behavior.
+    bottom_center=True anchors the sprite centered at the bottom band.
+    lift_px raises the sprite off the bottom edge (keeps CTA visible).
+    """
+    char = None
+    if ep_idx is not None:
+        char = _load_char_rgba(ep_idx)
+    if char is None and CHARACTER_IMG.exists():
+        # Legacy fallback: opaque square, old behavior.
+        char = __import__("PIL").Image.open(CHARACTER_IMG).convert("RGBA")
+    if char is None:
+        return
+    W, H = img.size
+    target = int(W * scale)
+    try:
+        _rs = __import__("PIL").Image.Resampling.LANCZOS
+    except AttributeError:
+        _rs = __import__("PIL").Image.LANCZOS
+    # Fit by the sprite's real aspect (not forced square) but cap height so a
+    # square-ish sprite scales the same as before.
+    ratio = char.height / char.width
+    tw, th = target, int(target * ratio)
+    max_h = int(H * 0.62)
+    if th > max_h:
+        th = max_h
+        tw = int(th / ratio)
+    char = char.resize((tw, th), _rs)
+    if bottom_center:
+        cx = (W - tw) // 2
+        cy = H - th - lift_px
+    else:
+        cx = (W - tw) // 2
+        cy = min(int(H * cy_frac), H - th - lift_px)
+    # Alpha composite (keeps sprite transparency; works on RGB base too).
+    if img.mode != "RGBA":
+        base_rgba = img.convert("RGBA")
+        base_rgba.alpha_composite(char, (cx, cy))
+        img.paste(base_rgba.convert("RGB"))
+    else:
+        img.alpha_composite(char, (cx, cy))
+
+
+def _bg_base(img_size: tuple[int, int], ep_idx: int, scrim: float = 0.45) -> "Image.Image":
+    """Build the card base: cover-fit episode background + dark scrim for
+    text contrast. Falls back to the old flat gradient colors if bg missing."""
+    from PIL import Image, ImageDraw
+    W, H = img_size
+    bg_path = episode_background(ep_idx)
+    base = None
+    if bg_path and bg_path.exists():
+        try:
+            bg = Image.open(bg_path).convert("RGB")
+            try:
+                _rs = Image.Resampling.LANCZOS
+            except AttributeError:
+                _rs = Image.LANCZOS
+            # cover-fit: scale so both dims >= target, center-crop
+            sw, sh = bg.size
+            k = max(W / sw, H / sh)
+            bg = bg.resize((int(sw * k) + 1, int(sh * k) + 1), _rs)
+            bx = (bg.width - W) // 2
+            by = (bg.height - H) // 2
+            base = bg.crop((bx, by, bx + W, by + H))
+        except Exception:
+            base = None
+    if base is None:
+        base = Image.new("RGB", (W, H), (12, 8, 26))
+    if scrim > 0:
+        overlay = Image.new("RGBA", (W, H), (8, 6, 20, int(255 * scrim)))
+        base = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
+    return base
+
 
 def _font(big=True):
     from PIL import ImageFont
@@ -251,35 +369,19 @@ def _font(big=True):
         return ImageFont.load_default()
 
 
-def _paste_char(img, scale=0.55, cy_frac=0.60):
-    if not CHARACTER_IMG.exists():
-        return
-    char = __import__("PIL").Image.open(CHARACTER_IMG).convert("RGB")
-    W, H = img.size
-    target = int(W * scale)
-    try:
-        _rs = __import__("PIL").Image.Resampling.LANCZOS
-    except AttributeError:
-        _rs = __import__("PIL").Image.LANCZOS
-    char = char.resize((target, target), _rs)
-    cx = (W - target) // 2
-    cy = int(H * cy_frac)
-    img.paste(char, (cx, cy))
+def _paste_char_lifted(img, scale, ep_idx, lift=0):
+    """Bottom-center paste with a lift so bottom-band text stays visible."""
+    _paste_char(img=img, scale=scale, cy_frac=0.0, ep_idx=ep_idx,
+                bottom_center=True, lift_px=lift)
 
 
-def make_hook_frame(subject: str, hook: str, out_path: Path) -> Path:
-    """BEAT 1 — bold HOOK card on a period-CRT gradient (NO black void)."""
+def make_hook_frame(subject: str, hook: str, out_path: Path,
+                    ep_idx: int | None = None) -> Path:
+    """BEAT 1 — bold HOOK card on the episode's room bg (scrimmed for text)."""
     from PIL import Image, ImageDraw
     W, H = 1080, 1920
-    # CRT gradient backdrop instead of flat black.
-    base = Image.new("RGB", (W, H), (12, 8, 26))
-    px = base.load()
-    for y in range(H):
-        # deep indigo top -> warm amber-tinted bottom
-        t = y / H
-        r = int(12 + t * 60); g = int(8 + t * 30); b = int(26 + t * 10)
-        for x in range(0, W, 4):
-            px[x, y] = (r, g, b)
+    base = (_bg_base((W, H), ep_idx, scrim=0.55) if ep_idx is not None
+            else Image.new("RGB", (W, H), (12, 8, 26)))
     d = ImageDraw.Draw(base)
     amber = (255, 176, 0); green = (120, 255, 140)
     fbig = _font(True); fsmall = _font(False)
@@ -297,18 +399,27 @@ def make_hook_frame(subject: str, hook: str, out_path: Path) -> Path:
         d.text((60, y), ln, fill=amber, font=fbig); y += 110
     # curiosity hook line
     d.text((60, y + 30), hook[:42], fill=(220, 220, 255), font=fsmall)
+    if ep_idx is not None:
+        # Cast member peeking from the bottom band, lifted 190px so the
+        # bottom CTA line (H-110) stays fully visible (2026-09-25 QA fix:
+        # sprite foot overlapped 'baseline.click'). 367px sprite: bottom
+        # lands at 1920-367-190=1363, well clear of the CTA band (~1770).
+        _lift = 190
+        _paste_char_lifted(base, scale=0.34, ep_idx=ep_idx, lift=_lift)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
     d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber, font=fsmall)
     base.save(out_path)
     return out_path
 
 
-def make_artifact_frame(subject: str, out_path: Path) -> Path:
-    """BEAT 2 — real artifact photo full-bleed with neon frame + RetroByte."""
+def make_artifact_frame(subject: str, out_path: Path,
+                        ep_idx: int | None = None) -> Path:
+    """BEAT 2 — real artifact photo full-bleed with neon frame + cast member."""
     from PIL import Image, ImageDraw
     W, H = 1080, 1920
     art = fetch_artifact(subject)
-    img = Image.new("RGB", (W, H), (18, 14, 34))
+    img = (_bg_base((W, H), ep_idx, scrim=0.25) if ep_idx is not None
+           else Image.new("RGB", (W, H), (18, 14, 34)))
     if art and art.exists():
         try:
             ph = __import__("PIL").Image.open(art).convert("RGB")
@@ -324,22 +435,25 @@ def make_artifact_frame(subject: str, out_path: Path) -> Path:
     d = ImageDraw.Draw(img)
     amber = (255, 176, 0)
     d.rectangle([30, 30, W - 30, H - 30], outline=amber, width=6)
-    _paste_char(img, scale=0.42, cy_frac=0.80)  # RetroByte lower, reacting
+    _paste_char(img=img, scale=0.42, cy_frac=0.80, ep_idx=ep_idx,
+                lift_px=220)  # bottom 1769, in-bounds + fully clears CTA band (~1770)
     d.text((60, H - 110), "PCMedicalist · baseline.click", fill=amber,
            font=_font(False))
     img.save(out_path)
     return out_path
 
 
-def make_reaction_frame(subject: str, out_path: Path) -> Path:
-    """BEAT 3 — RetroByte LARGE + sign-off + CTA (the "wow" closer)."""
+def make_reaction_frame(subject: str, out_path: Path,
+                        ep_idx: int | None = None) -> Path:
+    """BEAT 3 — cast member LARGE + sign-off + CTA (the "wow" closer)."""
     from PIL import Image, ImageDraw
     W, H = 1080, 1920
-    img = Image.new("RGB", (W, H), (8, 10, 28))
+    img = (_bg_base((W, H), ep_idx, scrim=0.45) if ep_idx is not None
+           else Image.new("RGB", (W, H), (8, 10, 28)))
     d = ImageDraw.Draw(img)
     amber = (255, 176, 0); green = (120, 255, 140)
     d.text((60, 140), "WAIT... IS THIS REAL?!", fill=green, font=_font(True))
-    _paste_char(img, scale=0.70, cy_frac=0.42)  # big RetroByte center
+    _paste_char(img=img, scale=0.70, cy_frac=0.42, ep_idx=ep_idx)  # big center
     d.text((60, H - 260), "Discover 90s tech with RetroByte", fill=amber,
            font=_font(False))
     d.text((60, H - 200), "on the baseLINE Twitch extension -> baseline.click",
@@ -441,16 +555,20 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
         return None
 
 
-def brand_overlay(clip_path: Path, out_path: Path) -> str | None:
-    """Composite the real RetroByte brand mascot over the T2VZ motion clip.
+def brand_overlay(clip_path: Path, out_path: Path,
+                  ep_idx: int | None = None) -> str | None:
+    """Composite the episode's cast sprite over the T2VZ motion clip.
 
     T2VZ cannot hold a consistent character (recipe gotcha: generates generic
-    objects). We overlay the actual RetroByte PNG so the video is always on-brand,
-    while the underlying clip provides the gadget motion. Mascot sits lower-left.
+    objects). We overlay the actual agent PNG (transparent RGBA) so the video
+    is always on-brand, while the underlying clip provides gadget motion.
+    Sprite sits lower-left. ep_idx=None falls back to legacy CHARACTER_IMG.
     Uses the robust two-input -filter_complex form (the movie= form is fragile).
     """
     ffmpeg = shutil.which("ffmpeg")
-    char = CHARACTER_IMG
+    char = episode_character(ep_idx) if ep_idx is not None else None
+    if char is None or not char.exists():
+        char = CHARACTER_IMG
     if not ffmpeg or not char.exists():
         return None
     try:
@@ -595,9 +713,15 @@ def main():
     narration = narrate(subject, hook)
     print(f"[discovery-gen] narration: {narration[:80]}...", flush=True)
 
-    make_hook_frame(subject, hook, f_hook)
-    make_artifact_frame(subject, f_art)
-    make_reaction_frame(subject, f_react)
+    # Rotating cast + room: episode index drives both picks (deterministic).
+    _char_p = episode_character(ep_idx)
+    _bg_p = episode_background(ep_idx)
+    print(f"[discovery-gen] cast={_char_p.name if _char_p else 'legacy'} "
+          f"room={_bg_p.name if _bg_p else 'gradient'}", flush=True)
+
+    make_hook_frame(subject, hook, f_hook, ep_idx=ep_idx)
+    make_artifact_frame(subject, f_art, ep_idx=ep_idx)
+    make_reaction_frame(subject, f_react, ep_idx=ep_idx)
     frames = [f_hook, f_art, f_react]
 
     if args.dry_run or args.test_render:
@@ -634,7 +758,7 @@ def main():
     else:
         # Brand-lock: overlay real RetroByte mascot over the T2VZ motion.
         branded = video.with_name(video.stem + "_brand.mp4")
-        branded_path = brand_overlay(Path(video_path), branded)
+        branded_path = brand_overlay(Path(video_path), branded, ep_idx=ep_idx)
         if branded_path:
             video_path = branded_path
         else:
