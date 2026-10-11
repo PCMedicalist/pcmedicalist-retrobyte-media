@@ -171,14 +171,40 @@ MODEL = "retrobyte:3b"
 
 
 # --- Voice narration via local retrobyte:3b ------------------------------
-def narrate(subject: str, hook: str) -> str:
+def _recent_captions(limit: int = 4) -> list[str]:
+    """Read a few local posted captions so Ollama can avoid recycling phrasing."""
+    state_path = HERE / ".retrobyte_post_state.json"
+    try:
+        history = json.loads(state_path.read_text()).get("history", [])
+        return [str(x.get("caption", "")).split("\n\n#", 1)[0]
+                for x in history[-limit:] if x.get("caption")]
+    except Exception:
+        return []
+
+
+def _fallback_narration(subject: str, hook: str, ep_idx: int) -> str:
+    """Local-only fallback with rotating sentence shapes, not one canned line."""
+    patterns = (
+        "I just met the {subject}, and it is wild: {hook}. RetroByte, signing off!",
+        "Today's time-capsule is the {subject}. {hook} I need a minute to process this!",
+        "Okay, the {subject} has my full attention. {hook} What a clever little machine!",
+        "Found a {subject} from the 90s! {hook} I would absolutely try this again.",
+    )
+    return patterns[ep_idx % len(patterns)].format(subject=subject, hook=hook)
+
+
+def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
+    recent = _recent_captions()
+    recent_block = "\n".join(f"- {x[:180]}" for x in recent)
     prompt = (
         "You are RetroByte, a curious AI intern from the PCMedicalist universe who "
         "just time-traveled to the 1990s and is AMAZED by old technology. "
-        "Write a SHORT (2-3 sentences, max 60 words) spoken narration about "
-        f"\"{subject}\" ({hook}). Be excited, use 'WAIT...', 'NO WAY...', "
-        "wide-eyed amazement. Plain text only — NO hashtags, NO emojis (they get "
-        "read aloud by TTS). End with a retro sign-off like 'RetroByte, signing off!'"
+        "Write a specific, fresh 2-sentence spoken narration (max 50 words) about "
+        f"\"{subject}\" ({hook}). Include one concrete reaction or observation. "
+        "Vary the opening and sentence rhythm; avoid generic 'WAIT', 'NO WAY', "
+        "'I can't believe' openings and do not repeat recent wording. Plain text, "
+        "no hashtags or emojis. End naturally in RetroByte's voice."
+        + (f"\nRecent captions to avoid:\n{recent_block}" if recent_block else "")
     )
     try:
         r = requests.post(
@@ -190,49 +216,38 @@ def narrate(subject: str, hook: str) -> str:
             t = r.json().get("response", "").strip()
             t = re.sub(r"[#@]\w+", "", t)
             t = "".join(ch for ch in t if ord(ch) < 0x2600)
-            return t.strip() or f"WAIT... {subject}! {hook}! RetroByte, signing off!"
+            t = " ".join(t.split()[:50]).strip()
+            norm = set(re.findall(r"[a-z]{3,}", t.lower()))
+            for prior in recent:
+                prev = set(re.findall(r"[a-z]{3,}", prior.lower()))
+                if norm and prev and len(norm & prev) / len(norm | prev) >= 0.72:
+                    print("[discovery-gen] narration too similar to recent caption; using local varied fallback",
+                          file=sys.stderr)
+                    return _fallback_narration(subject, hook, ep_idx)
+            return t or _fallback_narration(subject, hook, ep_idx)
     except Exception as e:
         print(f"[discovery-gen] narrate fail: {e}", file=sys.stderr)
-    return f"WAIT... {subject}! {hook}! RetroByte, signing off!"
+    return _fallback_narration(subject, hook, ep_idx)
 
 
 # --- Wikimedia fetch (cached) ------------------------------------------
 def fetch_artifact(subject: str) -> Path | None:
-    """Return a cached local path to a public-domain photo of the subject, or
-    None if unavailable. Uses Wikimedia Commons API (no key, rate-friendly)."""
+    """Return a locally cached artifact photo; never fetch media over network."""
     key = subject.lower().strip()
     title = None
     for k, v in WIKIMEDIA_TITLES.items():
         if k in key or key in k:
             title = v; break
-    if not title:
-        return None
     cache = IMG_CACHE / (re.sub(r"[^A-Za-z0-9]+", "_", key) + ".jpg")
     if cache.exists():
         return cache
-    try:
-        api = ("https://commons.wikimedia.org/w/api.php?action=query&format=json"
-               "&prop=imageinfo&iiprop=url&titles=" + requests.utils.quote(title))
-        meta = requests.get(api, headers={"User-Agent": "PCMedicalistRetroByte/1.0"},
-                            timeout=25)
-        if not meta.ok or "application/json" not in meta.headers.get("Content-Type", ""):
-            return None
-        meta = meta.json()
-        pages = meta.get("query", {}).get("pages", {})
-        url = None
-        for p in pages.values():
-            ii = (p.get("imageinfo") or [{}])[0]
-            url = ii.get("url")
-            break
-        if not url:
-            return None
-        img = requests.get(url, headers={"User-Agent": "PCMedicalistRetroByte/1.0"},
-                            timeout=40)
-        if img.ok and img.content[:4] in (b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1", b"\x89PNG"):
-            cache.write_bytes(img.content)
-            return cache
-    except Exception as e:
-        print(f"[discovery-gen] artifact fetch fail ({subject}): {e}", file=sys.stderr)
+    # Historical cache naming may differ in capitalization/prefix. Match an
+    # already-local cached filename by normalized subject without network I/O.
+    normalized = re.sub(r"[^a-z0-9]+", "", re.sub(r"^the\s+", "", key))
+    for candidate in IMG_CACHE.glob("*"):
+        candidate_key = re.sub(r"[^a-z0-9]+", "", candidate.stem.lower())
+        if candidate_key == normalized or candidate_key.endswith(normalized):
+            return candidate
     return None
 
 
@@ -424,6 +439,20 @@ def make_artifact_frame(subject: str, out_path: Path,
     W, H = 1080, 1920
     base = (_bg_base((W, H), ep_idx, scrim=0.55) if ep_idx is not None
             else Image.new("RGB", (W, H), (12, 8, 26)))
+    # If this exact artifact is already cached locally, show it as the episode's
+    # hero visual. No web request is made from the scheduled generation job.
+    artifact = fetch_artifact(subject)
+    if artifact and artifact.exists():
+        try:
+            photo = Image.open(artifact).convert("RGB")
+            photo.thumbnail((860, 620), Image.Resampling.LANCZOS)
+            frame = Image.new("RGB", (900, 660), (5, 7, 8))
+            frame.paste(photo, ((900 - photo.width) // 2,
+                                (660 - photo.height) // 2))
+            base.paste(frame, ((W - 900) // 2, 840))
+        except Exception as e:
+            print(f"[discovery-gen] cached artifact image skipped: {e}",
+                  file=sys.stderr)
     d = ImageDraw.Draw(base)
     amber = (255, 176, 0); green = (120, 255, 140)
     fbig = _font(True); fsmall = _font(False)
@@ -537,10 +566,12 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
     """
     from PIL import Image
     # Build a RetroByte-flavored T2V prompt from the narration + subject.
+    detail = re.sub(r"\s+", " ", narration).strip()[:220]
     prompt = (
         f"retro 1990s nostalgia animation, a cute CRT-TV-headed robot with glowing "
         f"blue pixel eyes discovers an old {subject.lower()}, wide-eyed amazement, "
-        f"reaches out to touch it, warm amber lighting, vaporwave palette, "
+        f"visual moment: {detail}, reaches out to touch it, warm amber lighting, "
+        f"vaporwave palette, "
         f"smooth motion, hand-drawn cartoon style"
     )
     t2vz = HERE / "t2vz_generate.py"
@@ -722,13 +753,15 @@ def main():
     print(f"[discovery-gen] episode#{ep_idx + 1} subject={subject} slot={args.slot}",
           flush=True)
 
-    stamp = _dt.date.today().strftime("%Y-%m-%d") + f"-d{args.slot}"
+    _subject_slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:36]
+    _run_stamp = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H%M%SZ")
+    stamp = f"{_run_stamp}-d{args.slot}-{_subject_slug}"
     f_hook = OUTBOX / f"disc_frame_{stamp}_hook.png"
     f_art = OUTBOX / f"disc_frame_{stamp}_art.png"
     f_react = OUTBOX / f"disc_frame_{stamp}_react.png"
     video = OUTBOX / f"disc_video_{stamp}.mp4"
 
-    narration = narrate(subject, hook)
+    narration = narrate(subject, hook, ep_idx)
     print(f"[discovery-gen] narration: {narration[:80]}...", flush=True)
 
     # Rotating cast + room: episode index drives both picks (deterministic).
