@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # retrobyte_heal.sh — self-healing wrapper for the RetroByte discovery post step.
 # Runs the 4 autonomy checks BEFORE/AFTER posting so the pipeline is hands-off:
-#   1. pre-flight deps (Ollama, local espeak-ng, Buffer token/channels/pause)
+#   1. pre-flight deps (local Kokoro/Fenrir render, Ollama, Buffer channels/pause)
 #   2. raw-URL check (video reachable on GitHub raw) + push retry
 #   3. post via Buffer shareNow
 #   4. post-verify status:sent (retry once) + alert owner on hard failure

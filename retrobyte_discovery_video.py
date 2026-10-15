@@ -21,8 +21,8 @@ Pipeline (upgraded 2026-09-22):
 No more black-void single frames — every episode shows the real artifact and
 cuts between three distinct shots for retention/virality.
 
-Run from host (needs content-os venv: PIL; local espeak-ng + system ffmpeg;
-Ollama retrobyte:3b). Invoked by a host cron at 11:00 + 20:00 (staggered away from
+Run from host (needs content-os venv: PIL; external local Kokoro model + system
+ffmpeg; Ollama retrobyte:3b). Invoked by a host cron at 11:00 + 20:00 (staggered away from
 PCMedicalist's GPU windows).
 """
 from __future__ import annotations
@@ -56,6 +56,11 @@ SERIES_FILES = [
 ]
 STATE_FILE = HERE / "_discovery_state.json"
 POSTED_REGISTRY = HERE / "_posted_registry.json"
+KOKORO_ROOT = Path("/media/pcmedicalist/PCM/.pcmedicalist/tts/kokoro")
+KOKORO_SITE_PACKAGES = KOKORO_ROOT / "python-packages"
+KOKORO_MODEL = KOKORO_ROOT / "v1.0/kokoro-v1.0.onnx"
+KOKORO_VOICES = KOKORO_ROOT / "v1.0/voices-v1.0.bin"
+RETROBYTE_TTS_VOICE = "am_fenrir"
 
 
 def load_posted() -> set:
@@ -256,33 +261,48 @@ def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
 
 
 def synthesize_local_voice(text: str, out_path: Path) -> dict:
-    """Create narration locally; never send RetroByte copy to cloud TTS."""
-    binary = Path.home() / ".local/opt/espeak-ng/usr/bin/espeak-ng"
-    if not binary.is_file():
-        binary = Path("/usr/bin/espeak-ng")
-    if not binary.is_file():
-        return {"ok": False, "error": "local espeak-ng executable is missing"}
+    """Create narration with the approved local Kokoro voice, never cloud TTS."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return {"ok": False, "error": "ffmpeg is missing"}
+    if not KOKORO_MODEL.is_file() or not KOKORO_VOICES.is_file():
+        return {"ok": False, "error": f"local Kokoro model files are missing under {KOKORO_ROOT}"}
+    if not KOKORO_SITE_PACKAGES.is_dir():
+        return {"ok": False, "error": f"local Kokoro runtime is missing under {KOKORO_SITE_PACKAGES}"}
 
     out_path = Path(out_path)
     wav_path = out_path.with_suffix(".wav")
     try:
-        spoken = subprocess.run(
-            [str(binary), "-v", "en-us", "-s", "158", "-w", str(wav_path), text],
-            capture_output=True, text=True, timeout=90, check=False)
-        if spoken.returncode != 0 or not wav_path.is_file() or wav_path.stat().st_size == 0:
-            return {"ok": False, "error": spoken.stderr.strip() or "espeak-ng failed"}
+        # The small neural runtime and weights live on the external PCM drive;
+        # keep them out of the crowded home-disk cache and fail closed if absent.
+        sys.path.insert(0, str(KOKORO_SITE_PACKAGES))
+        import onnxruntime as ort
+        import soundfile as sf
+        from kokoro_onnx import Kokoro
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 4
+        options.inter_op_num_threads = 1
+        session = ort.InferenceSession(
+            str(KOKORO_MODEL), sess_options=options,
+            providers=["CPUExecutionProvider"])
+        tts = Kokoro.from_session(session, str(KOKORO_VOICES))
+        if RETROBYTE_TTS_VOICE not in tts.get_voices():
+            return {"ok": False, "error": f"Kokoro voice {RETROBYTE_TTS_VOICE} is unavailable"}
+        samples, sample_rate = tts.create(
+            text, voice=RETROBYTE_TTS_VOICE, speed=1.0, lang="en-us")
+        sf.write(str(wav_path), samples, sample_rate)
+        if not wav_path.is_file() or wav_path.stat().st_size == 0:
+            return {"ok": False, "error": "Kokoro produced an empty WAV"}
         encoded = subprocess.run(
             [ffmpeg, "-y", "-loglevel", "error", "-i", str(wav_path),
              "-codec:a", "libmp3lame", "-q:a", "4", str(out_path)],
             capture_output=True, text=True, timeout=90, check=False)
         if encoded.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
-            return {"ok": False, "error": encoded.stderr.strip() or "local MP3 encoding failed"}
-        return {"ok": True, "path": str(out_path), "voice": "espeak-ng:en-us"}
+            return {"ok": False, "error": encoded.stderr.strip() or "Kokoro MP3 encoding failed"}
+        return {"ok": True, "path": str(out_path), "voice": f"kokoro-onnx:{RETROBYTE_TTS_VOICE}"}
     except Exception as exc:
-        return {"ok": False, "error": f"local TTS failed: {exc}"}
+        return {"ok": False, "error": f"local Kokoro TTS failed: {exc}"}
     finally:
         try:
             wav_path.unlink(missing_ok=True)
