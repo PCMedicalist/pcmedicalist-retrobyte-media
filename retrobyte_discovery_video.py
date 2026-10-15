@@ -21,8 +21,8 @@ Pipeline (upgraded 2026-09-22):
 No more black-void single frames — every episode shows the real artifact and
 cuts between three distinct shots for retention/virality.
 
-Run from host (needs content-os venv: edge-tts + PIL; system ffmpeg; Ollama
-retrobyte:3b). Invoked by a host cron at 11:00 + 20:00 (staggered away from
+Run from host (needs content-os venv: PIL; local espeak-ng + system ffmpeg;
+Ollama retrobyte:3b). Invoked by a host cron at 11:00 + 20:00 (staggered away from
 PCMedicalist's GPU windows).
 """
 from __future__ import annotations
@@ -228,6 +228,41 @@ def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
     except Exception as e:
         print(f"[discovery-gen] narrate fail: {e}", file=sys.stderr)
     return _fallback_narration(subject, hook, ep_idx)
+
+
+def synthesize_local_voice(text: str, out_path: Path) -> dict:
+    """Create narration locally; never send RetroByte copy to cloud TTS."""
+    binary = Path.home() / ".local/opt/espeak-ng/usr/bin/espeak-ng"
+    if not binary.is_file():
+        binary = Path("/usr/bin/espeak-ng")
+    if not binary.is_file():
+        return {"ok": False, "error": "local espeak-ng executable is missing"}
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return {"ok": False, "error": "ffmpeg is missing"}
+
+    out_path = Path(out_path)
+    wav_path = out_path.with_suffix(".wav")
+    try:
+        spoken = subprocess.run(
+            [str(binary), "-v", "en-us", "-s", "158", "-w", str(wav_path), text],
+            capture_output=True, text=True, timeout=90, check=False)
+        if spoken.returncode != 0 or not wav_path.is_file() or wav_path.stat().st_size == 0:
+            return {"ok": False, "error": spoken.stderr.strip() or "espeak-ng failed"}
+        encoded = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(wav_path),
+             "-codec:a", "libmp3lame", "-q:a", "4", str(out_path)],
+            capture_output=True, text=True, timeout=90, check=False)
+        if encoded.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
+            return {"ok": False, "error": encoded.stderr.strip() or "local MP3 encoding failed"}
+        return {"ok": True, "path": str(out_path), "voice": "espeak-ng:en-us"}
+    except Exception as exc:
+        return {"ok": False, "error": f"local TTS failed: {exc}"}
+    finally:
+        try:
+            wav_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # --- Wikimedia fetch (cached) ------------------------------------------
@@ -783,20 +818,15 @@ def main():
             pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
                              "pcmedicalist-social-publisher/pipelines")
             sys.path.insert(0, str(pipelines))
-            import media_clip as mc
             mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
-            vr = mc._tts(narration, str(mp3), voice="en-US-AnaNeural")
+            vr = synthesize_local_voice(narration, mp3)
             if vr.get("ok"):
                 build_montage(narration, frames, mp3, video)
                 print(f"[discovery-gen] TEST VIDEO: {video}")
         return
 
     mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
-    pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
-                     "pcmedicalist-social-publisher/pipelines")
-    sys.path.insert(0, str(pipelines))
-    import media_clip as mc
-    vr = mc._tts(narration, str(mp3), voice="en-US-AnaNeural")
+    vr = synthesize_local_voice(narration, mp3)
     if not vr.get("ok") or not mp3.exists():
         print("[discovery-gen] TTS FAILED — not staging", file=sys.stderr)
         sys.exit(1)
