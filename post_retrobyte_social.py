@@ -19,7 +19,7 @@ Usage:
   python3 post_retrobyte_social.py --slot evening --dry-run   # no Buffer calls
   python3 post_retrobyte_social.py --slot morning --force-video retrobyte-good-morning.mp4
 
-Env (read from /home/pcmedicalist/.pcmedicalist/.env.retrobyte):
+Env (read from /media/pcmedicalist/PCM/.pcmedicalist/.env.retrobyte):
   BUFFER_ACCESS_TOKEN
   RETROBYTE_TWITTER_USERNAME / RETROBYTE_INSTAGRAM_USERNAME / RETROBYTE_TIKTOK_USERNAME (optional, used only for logging)
 """
@@ -38,7 +38,7 @@ from pathlib import Path
 # Config
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_FILE = "/home/pcmedicalist/.pcmedicalist/.env.retrobyte"
+ENV_FILE = "/media/pcmedicalist/PCM/.pcmedicalist/.env.retrobyte"
 MEDIA_BASE_URL = "https://raw.githubusercontent.com/PCMedicalist/pcmedicalist-retrobyte-media/main/media"
 MEDIA_DIR = "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/media"
 STATE_FILE = os.environ.get(

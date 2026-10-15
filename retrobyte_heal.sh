@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # retrobyte_heal.sh — self-healing wrapper for the RetroByte discovery post step.
 # Runs the 4 autonomy checks BEFORE/AFTER posting so the pipeline is hands-off:
-#   1. pre-flight deps (Ollama, edge-tts, Buffer token/channels/pause)
+#   1. pre-flight deps (Ollama, local espeak-ng, Buffer token/channels/pause)
 #   2. raw-URL check (video reachable on GitHub raw) + push retry
 #   3. post via Buffer shareNow
 #   4. post-verify status:sent (retry once) + alert owner on hard failure
@@ -12,7 +12,7 @@ SLOT="${1:-0}"
 POST_SLOT="morning"; [ "$SLOT" = "1" ] && POST_SLOT="evening"
 MEDIA_DIR="/home/pcmedicalist/pcmedicalist-retrobyte-media"
 REPO_DIR="$MEDIA_DIR"
-ENV_FILE="/home/pcmedicalist/.pcmedicalist/.env.retrobyte"
+ENV_FILE="/media/pcmedicalist/PCM/.pcmedicalist/.env.retrobyte"
 CONTAINER="retrobyte-cron"
 OWNER_ALERT() { echo "[HEAL][ALERT] $*" >&2; }
 ok() { echo "[HEAL] $*"; }
