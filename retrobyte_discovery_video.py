@@ -169,6 +169,13 @@ def next_episode(slot: int, force: str | None = None):
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "retrobyte:3b"
 
+_FACT_ANCHORS = {
+    "THE DOT-MATRIX PRINTER": (
+        "Electrically controlled pins in its print head strike an ink ribbon "
+        "against paper to form characters from dots."
+    ),
+}
+
 
 # --- Voice narration via local retrobyte:3b ------------------------------
 def _recent_captions(limit: int = 4) -> list[str]:
@@ -184,6 +191,12 @@ def _recent_captions(limit: int = 4) -> list[str]:
 
 def _fallback_narration(subject: str, hook: str, ep_idx: int) -> str:
     """Local-only fallback with rotating sentence shapes, not one canned line."""
+    if subject.upper() == "THE DOT-MATRIX PRINTER":
+        return (
+            "A dot-matrix printer uses tiny electrically driven pins to strike "
+            "an ink ribbon and build letters from dots. That clattering print "
+            "head turns every page into a little machine show!"
+        )
     patterns = (
         "I just met the {subject}, and it is wild: {hook}. RetroByte, signing off!",
         "Today's time-capsule is the {subject}. {hook} I need a minute to process this!",
@@ -196,11 +209,15 @@ def _fallback_narration(subject: str, hook: str, ep_idx: int) -> str:
 def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
     recent = _recent_captions()
     recent_block = "\n".join(f"- {x[:180]}" for x in recent)
+    fact_anchor = _FACT_ANCHORS.get(subject.upper())
     prompt = (
         "You are RetroByte, a curious AI intern from the PCMedicalist universe who "
         "just time-traveled to the 1990s and is AMAZED by old technology. "
         "Write a specific, fresh 2-sentence spoken narration (max 50 words) about "
         f"\"{subject}\" ({hook}). Include one concrete reaction or observation. "
+        + (f"Verified fact to state accurately: {fact_anchor} " if fact_anchor else "")
+        + "Do not invent technical details or contradict supplied facts; if unsure, "
+        "react to the subject without adding a technical claim. "
         "Vary the opening and sentence rhythm; avoid generic 'WAIT', 'NO WAY', "
         "'I can't believe' openings and do not repeat recent wording. Plain text, "
         "no hashtags or emojis. End naturally in RetroByte's voice."
@@ -209,7 +226,8 @@ def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
     try:
         r = requests.post(
             OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False, "temperature": 0.9},
+            json={"model": MODEL, "prompt": prompt, "stream": False,
+                  "temperature": 0.9, "keep_alive": 0},
             timeout=90,
         )
         if r.ok:
@@ -217,6 +235,13 @@ def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
             t = re.sub(r"[#@]\w+", "", t)
             t = "".join(ch for ch in t if ord(ch) < 0x2600)
             t = " ".join(t.split()[:50]).strip()
+            if (subject.upper() == "THE DOT-MATRIX PRINTER" and re.search(
+                    r"\b(?:no|without|zero)\s+(?:any\s+)?(?:electricity|power)\b|"
+                    r"\b(?:doesn't|does not)\s+(?:need|use|require)\s+(?:any\s+)?"
+                    r"(?:electricity|power)\b", t, re.I)):
+                print("[discovery-gen] contradicted printer power fact; using grounded local fallback",
+                      file=sys.stderr)
+                return _fallback_narration(subject, hook, ep_idx)
             norm = set(re.findall(r"[a-z]{3,}", t.lower()))
             for prior in recent:
                 prev = set(re.findall(r"[a-z]{3,}", prior.lower()))
