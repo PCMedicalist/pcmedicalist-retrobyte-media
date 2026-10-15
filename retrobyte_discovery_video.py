@@ -7,11 +7,11 @@ artifact, then stages it for the in-container retrobyte-cron poster to publish
 to X / IG / TikTok.
 
 Pipeline (upgraded 2026-09-22):
-  1. Pick a 90s-tech subject (rotating, no repeat until cycled).
+  1. Pick a never-before-used subject from the fresh topic queue.
   2. Narrate it in RetroByte voice via the local retrobyte:3b Ollama model.
   3. Build a 3-BEAT montage (NOT a frozen still):
        beat 1 = HOOK card (bold subject + curiosity line, period CRT backdrop)
-       beat 2 = ARTIFACT hero (real public-domain Wikimedia photo, full-bleed)
+       beat 2 = ARTIFACT hero (locally cached artifact photo when available)
        beat 3 = REACTION/CTA (RetroByte large + sign-off + baseline.click)
      Each beat gets a subtle Ken-Burns zoom so the clip has motion.
   4. Mux the beats into one narrated MP4 via mux_video.mux_beats() (timed CC
@@ -48,12 +48,13 @@ READY_FILE = HERE / "_discovery_ready.json"
 IMG_CACHE = HERE / "img_cache"
 IMG_CACHE.mkdir(parents=True, exist_ok=True)
 
-# --- Authoritative 90s-tech subject sequence (NO repeats) -----------------
+# --- Historical subject archive and fresh topic queue ---------------------
 SERIES_FILES = [
     Path("/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/"
          "RETROBYTE-OLD-TECH-DISCOVERY.md"),
     HERE / "RETROBYTE OLD TECH DISCOVERY.md",  # sync copy fallback
 ]
+FRESH_TOPICS_FILE = HERE / "RETROBYTE FRESH DISCOVERY TOPICS.md"
 STATE_FILE = HERE / "_discovery_state.json"
 POSTED_REGISTRY = HERE / "_posted_registry.json"
 KOKORO_ROOT = Path("/media/pcmedicalist/PCM/.pcmedicalist/tts/kokoro")
@@ -63,25 +64,50 @@ KOKORO_VOICES = KOKORO_ROOT / "v1.0/voices-v1.0.bin"
 RETROBYTE_TTS_VOICE = "am_fenrir"
 
 
+def _topic_key(value: str) -> str:
+    """Normalize title-only and legacy title|date keys for lifetime dedup."""
+    value = str(value or "").split("|", 1)[0]
+    value = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+    value = re.sub(r"^the\s+", "", value)
+    return " ".join(value.split())
+
+
+def _read_json_history(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    # A corrupt existing ledger must stop generation; treating it as empty
+    # would silently re-use subjects after a full-cycle restart.
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def load_posted() -> set:
-    """Return the set of episode TITLES already generated/staged (dedup table)."""
-    if POSTED_REGISTRY.exists():
-        try:
-            return set(json.loads(POSTED_REGISTRY.read_text()).get("titles", []))
-        except Exception:
-            return set()
-    return set()
+    """Return all subjects seen in generator and publisher ledgers."""
+    posted = set()
+    registry = _read_json_history(POSTED_REGISTRY)
+    posted.update(_topic_key(x) for x in registry.get("titles", []))
+    for legacy in SERIES_FILES:
+        if legacy.exists():
+            text = legacy.read_text(encoding="utf-8", errors="ignore")
+            posted.update(_topic_key(m.group(1)) for m in re.finditer(
+                r"^#+\s*\d{1,3}\s*[—-]\s*(.+)$", text, re.M))
+    publisher_state = _read_json_history(HERE / ".retrobyte_post_state.json")
+    for value in publisher_state.get("posted_episodes", []):
+        posted.add(_topic_key(value))
+    for item in publisher_state.get("history", []):
+        posted.add(_topic_key(item.get("episode", "")))
+    generator_state = _read_json_history(STATE_FILE)
+    posted.add(_topic_key(generator_state.get("episode", "")))
+    return {key for key in posted if key}
 
 
 def record_posted(title: str, slot: int, fname: str):
-    """Persist a generated episode to the dedup registry so it is never
-    re-picked until the full series cycle completes."""
+    """Persist a generated episode in a lifetime dedup registry."""
     data = {"titles": [], "cycle": 0}
     if POSTED_REGISTRY.exists():
         try:
             data = json.loads(POSTED_REGISTRY.read_text())
-        except Exception:
-            data = {"titles": [], "cycle": 0}
+        except Exception as exc:
+            raise RuntimeError(f"Cannot read topic registry {POSTED_REGISTRY}: {exc}")
     titles = set(data.get("titles", []))
     titles.add(title)
     data["titles"] = sorted(titles)
@@ -113,27 +139,28 @@ WIKIMEDIA_TITLES = {
 
 
 def load_episodes() -> list[tuple[str, str]]:
-    """Return [(title, slug), ...] parsed from the series bible, in order."""
-    text = ""
-    for sf in SERIES_FILES:
-        if sf.exists():
-            text = sf.read_text(encoding="utf-8", errors="ignore")
-            break
-    if not text:
-        return [("Floppy Disk", "the 1.44MB time capsule"),
-                ("Walkman", "music in your pocket"),
-                ("Rotary Phone", "the dial that rang")]
+    """Return fresh episode topics with their distinct narration angles."""
+    if not FRESH_TOPICS_FILE.exists():
+        raise RuntimeError(f"Fresh topic catalog is missing: {FRESH_TOPICS_FILE}")
+    text = FRESH_TOPICS_FILE.read_text(encoding="utf-8")
     eps = []
-    for m in re.finditer(r"^#+\s*(\d{1,3})\s*[—-]\s*(.+)$", text, re.M):
-        title = m.group(2).strip()
-        eps.append((title, title))
+    blocks = re.split(r"(?=^##\s+\d+\s*[—-]\s*)", text, flags=re.M)
+    for block in blocks:
+        m = re.match(r"##\s+\d+\s*[—-]\s*(.+)", block.strip())
+        if not m:
+            continue
+        title = m.group(1).strip()
+        angle = re.search(r"^Angle:\s*(.+)$", block, re.M)
+        eps.append((title, angle.group(1).strip() if angle else title))
     seen = set(); out = []
     for t, s in eps:
-        if t.lower() in seen:
+        if _topic_key(t) in seen:
             continue
-        seen.add(t.lower())
+        seen.add(_topic_key(t))
         out.append((t, s))
-    return out or [("Floppy Disk", "the 1.44MB time capsule")]
+    if not out:
+        raise RuntimeError(f"No topics found in fresh topic catalog: {FRESH_TOPICS_FILE}")
+    return out
 
 
 def next_episode(slot: int, force: str | None = None):
@@ -146,25 +173,28 @@ def next_episode(slot: int, force: str | None = None):
         except Exception:
             st = {}
     last = int(st.get("last_index", -1))
+    # The old 25-subject list used this same state file. Its numeric index has
+    # no meaning in the new catalog, so start the fresh queue at entry one.
+    if st.get("episode") and _topic_key(st.get("episode")) not in {
+            _topic_key(title) for title, _angle in eps}:
+        last = -1
     posted = load_posted()
     if force:
         idx = next((i for i, (t, _s) in enumerate(eps)
-                    if t.lower() == force.lower()), None)
+                    if _topic_key(t) == _topic_key(force)), None)
         if idx is None:
-            eps.append((force, force)); idx = n; n += 1
+            raise RuntimeError(f"Forced topic is not in the fresh catalog: {force}")
+        if _topic_key(eps[idx][0]) in posted:
+            raise RuntimeError(f"Topic was already used and cannot be repeated: {eps[idx][0]}")
     else:
-        # Walk forward from last_index+1, SKIP any title already generated this
-        # cycle (dedup table). Loop forever without re-posting within a cycle.
+        # Walk forward without wrapping into a recycled cycle.
         for step in range(1, n + 1):
             cand = (last + step) % n
-            if eps[cand][0] not in posted:
+            if _topic_key(eps[cand][0]) not in posted:
                 idx = cand
                 break
         else:
-            # Entire series already posted — start a fresh cycle.
-            posted.clear()
-            POSTED_REGISTRY.write_text(json.dumps({"titles": [], "cycle": st.get("cycle", 0) + 1}))
-            idx = (last + 1) % n
+            raise RuntimeError("No unseen topics remain; add new topics to the fresh catalog.")
     title, slug = eps[idx]
     STATE_FILE.write_text(json.dumps({"last_index": idx, "episode": title,
                                       "ts": _dt.datetime.utcnow().isoformat() + "Z"}))

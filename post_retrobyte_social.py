@@ -11,8 +11,7 @@ Design notes:
   to keep the persona voice and honor the local-inference directive.
 - Posting is SCHEDULED (addToQueue) — never shareNow — so each post lands at the
   time the cron job fires. The cron schedule controls exposure timing.
-- State file tracks which video was last used so the rotation never repeats
-  until all clips have been posted (full cycle), then starts over.
+- State file tracks posted/reserved clips; a used video is never recycled.
 
 Usage:
   python3 post_retrobyte_social.py --slot morning   # real post
@@ -25,6 +24,7 @@ Env (read from /media/pcmedicalist/PCM/.pcmedicalist/.env.retrobyte):
 """
 import argparse
 import datetime
+import difflib
 import json
 import os
 import re
@@ -78,8 +78,8 @@ HASHTAG_POOL = [
 CAPTION_SYSTEM = (
     "You are RetroByte, a curious retro-computing intern AI companion. "
     "Personality: excited, innocent, endlessly curious, easily amazed by old tech. "
-    "Speech habits: often starts with 'WAIT...', 'NO WAY...', 'HOLD ON...', or 'I HAVE A QUESTION.' "
-    "Treats floppy disks, CRTs, dial-up, Game Boys, VHS, and old websites like treasures. "
+    "Use varied, natural openings and specific details from this video. "
+    "Do not rely on repeated catchphrases or subjects already used. "
     "Writes like a human posting to social media, not like a bot."
 )
 
@@ -88,7 +88,7 @@ CAPTION_TASK = (
     "Rules:\n"
     "- Max 200 characters total (hard limit; a separate CTA is appended after).\n"
     "- 1-2 sentences, in RetroByte's excited voice.\n"
-    "- Relate it to the video title's theme (discovery, bonding, morning, laughing, etc.).\n"
+    "- Relate it to this video's specific subject and detail.\n"
     "- Do NOT add any hashtags or call-to-action — those are added automatically.\n"
     "- No quotation marks around the whole thing. Write like a human, not a bot.\n"
     "Caption:"
@@ -181,8 +181,22 @@ def title_to_theme(title):
     return t.replace("-", " ").strip()
 
 
-def generate_caption(theme, hashtag, cta):
+def _caption_key(value):
+    return " ".join(re.findall(r"[a-z0-9]+", str(value).casefold()))
+
+
+def _recent_captions(state, limit=12):
+    return [str(item.get("caption", "")).split("\n\n#", 1)[0]
+            for item in state.get("history", [])[-limit:]
+            if item.get("caption")]
+
+
+def generate_caption(theme, hashtag, cta, history=()):
+    recent = list(history)
+    recent_block = "\n".join(f"- {caption[:180]}" for caption in recent)
     prompt = CAPTION_SYSTEM + "\n\n" + CAPTION_TASK.format(title=theme)
+    if recent_block:
+        prompt += "\nRecent captions: do not repeat their wording, hooks, or structure.\n" + recent_block
     body = json.dumps({
         "model": MODEL,
         "prompt": prompt,
@@ -204,6 +218,13 @@ def generate_caption(theme, hashtag, cta):
     text = text.strip().strip('"').strip()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"#\S+", "", text).strip()  # drop model-emitted hashtags
+    if not text:
+        raise RuntimeError("Local caption generation returned no fresh caption; refusing to post.")
+    key = _caption_key(text)
+    for old in recent:
+        old_key = _caption_key(old)
+        if key and old_key and difflib.SequenceMatcher(None, key, old_key).ratio() >= 0.76:
+            raise RuntimeError("Generated caption is too similar to a recent post; refusing to repeat it.")
     # Build final caption: lead line + hashtag + blank line + baseLINE CTA.
     # Enforce hard X limit of 280 chars on the WHOLE thing.
     base = text
@@ -257,48 +278,79 @@ def save_state(state):
 LOCK_FILE = STATE_FILE + ".lock"
 
 
-def reserve_video(force=None):
+def reserve_video(force=None, dry_run=False):
     """Atomically pick the next rotation video AND advance the CTA + hashtag
     rotation indices, persisting everything IMMEDIATELY (before the slow caption
     generation), so concurrent runs can never select the same clip or CTA.
     Uses an exclusive flock so two near-simultaneous cron runs serialize
     cleanly and each reserve a distinct index.
 
-    DEDUP: clamps last_index into the current pool size (so a stale high index
-    from when the pool was larger can't pin every run to one clip) and never
-    returns the same clip twice in a row."""
+    A clip is retired after one successful post and is never recycled. Existing
+    history and active reservations are both treated as used content."""
     with open(LOCK_FILE, "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         videos = list_videos()
         if not videos:
             raise RuntimeError(f"No videos found in {MEDIA_DIR}")
-        # Clamp a stale last_index into the current pool so rotation actually
-        # advances instead of always landing on index (stale+1) % small_pool.
         state = load_state()
-        li = state.get("last_index", -1)
-        if li < 0 or li >= len(videos):
-            li = -1  # reset to start fresh from the current pool
+        used = {str(item.get("video", "")) for item in state.get("history", [])}
+        used.update(state.get("reserved_videos", []))
         if force:
             if force not in videos:
                 raise RuntimeError(f"--force-video {force} not found in {MEDIA_DIR}")
+            if force in used:
+                raise RuntimeError(f"Refusing to repeat previously used video: {force}")
             idx = videos.index(force)
         else:
-            idx = (li + 1) % len(videos)
-            # Never post the same clip twice consecutively.
-            if videos[idx] == state.get("last_video") and len(videos) > 1:
-                idx = (idx + 1) % len(videos)
+            candidates = [v for v in videos if v not in used]
+            if not candidates:
+                raise RuntimeError("No unseen fallback videos remain; add fresh videos instead of recycling old posts.")
+            li = state.get("last_index", -1)
+            idx = videos.index(candidates[0])
+            if isinstance(li, int) and 0 <= li < len(videos):
+                for step in range(1, len(videos) + 1):
+                    candidate_idx = (li + step) % len(videos)
+                    if videos[candidate_idx] in candidates:
+                        idx = candidate_idx
+                        break
         video = videos[idx]
         state["last_index"] = idx
         state["last_video"] = video
+        if not dry_run:
+            state["reserved_videos"] = sorted(set(state.get("reserved_videos", [])) | {video})
 
         # Advance CTA + hashtag rotation in lock-step with the video pick.
         cta_idx = (state.get("cta_index", -1) + 1) % len(BASELINE_CTAS)
         hashtag_idx = (state.get("cta_index", -1) + 1) % len(HASHTAG_POOL)
         state["cta_index"] = cta_idx
-        save_state(state)  # reserve now, before any slow work
+        if not dry_run:
+            save_state(state)  # reserve now, before any slow work
         cta = BASELINE_CTAS[cta_idx]
         hashtag = HASHTAG_POOL[hashtag_idx]
         return video, idx, cta, hashtag
+
+
+def release_video_reservation(video):
+    """Release an unpublished clip after generation or delivery fails."""
+    with open(LOCK_FILE, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        state = load_state()
+        state["reserved_videos"] = [v for v in state.get("reserved_videos", [])
+                                    if v != video]
+        save_state(state)
+
+
+def record_discovery_post(state, subject, video, caption, slot, results):
+    """Persist a discovery clip as used as soon as any channel accepts it."""
+    posted = set(state.get("posted_episodes", []))
+    posted.add(subject)
+    state["posted_episodes"] = sorted(posted)
+    history = state.setdefault("history", [])
+    if not any(item.get("video") == video for item in history):
+        history.append({"video": video, "caption": caption, "slot": slot,
+                        "episode": subject, "results": results,
+                        "ts": datetime.datetime.utcnow().isoformat() + "Z"})
+    save_state(state)
 
 
 # ---------------------------------------------------------------------------
@@ -330,21 +382,36 @@ def main():
     ready = Path(SCRIPT_DIR) / "_discovery_ready.json"
     state = load_state()
     posted_episodes = set(state.get("posted_episodes", []))
+    posted_episodes.update(item.get("episode", "") for item in state.get("history", []))
     if ready.exists():
         try:
             disc = json.loads(ready.read_text())
             dvideo = disc.get("video_name")
             dcaption = disc.get("caption")
             dpath = disc.get("video")  # absolute path of staged file
-            dep_key = f"{disc.get('subject','?')}|{disc.get('ts','?')[:10]}"
+            dep_key = re.sub(r"\s*\|\s*\d{4}-\d{2}-\d{2}$", "", str(disc.get("subject", "?"))).strip().casefold()
+            dep_key = " ".join(re.findall(r"[a-z0-9]+", dep_key))
+            posted_keys = {" ".join(re.findall(r"[a-z0-9]+", str(x).split("|", 1)[0].casefold()))
+                           for x in posted_episodes}
             # Validate the staged file still exists (prefer the real path; fall
             # back to MEDIA_DIR join for backward-compat).
             _exists = os.path.exists(dpath) if dpath else False
             if not _exists and dvideo:
                 _exists = os.path.exists(os.path.join(MEDIA_DIR, dvideo))
             if dvideo and dcaption and _exists:
+                used_discovery = {str(item.get("video", ""))
+                                  for item in state.get("history", [])}
+                used_discovery.update(state.get("reserved_videos", []))
+                if dvideo in used_discovery:
+                    print(f"[{args.slot}] SKIP: discovery clip {dvideo} was already used; refusing to recycle it.")
+                    if not args.dry_run:
+                        try:
+                            ready.unlink()
+                        except OSError:
+                            pass
+                    return
                 # Already posted this episode? Consume the flag but do NOT repost.
-                if dep_key in posted_episodes:
+                if dep_key in posted_keys:
                     print(f"[{args.slot}] SKIP: episode {dep_key} already posted (dedup). Clearing stale ready flag.")
                     try:
                         ready.unlink()
@@ -394,21 +461,9 @@ def main():
                 # Clear the ready flag ONLY after a successful post so a missed
                 # run can retry (the generator also rotates subjects per day).
                 if any(v.startswith("OK") for v in results.values()):
-                    # Record this episode as posted so the dedup guard never
-                    # reposts it even if the ready flag lingers or regenerates.
-                    posted_episodes.add(dep_key)
-                    state["posted_episodes"] = sorted(posted_episodes)
-                    # Append history so the dead-cycle detector's PRIMARY
-                    # signal stays fresh (2026-09-25: history was stale since
-                    # Sep 18 because only the fallback path appended — the
-                    # detector was running on its posted_episodes fallback).
-                    state.setdefault("history", []).append({
-                        "video": dvideo, "caption": dcaption,
-                        "slot": args.slot, "episode": dep_key,
-                        "results": results,
-                        "ts": datetime.datetime.utcnow().isoformat() + "Z"
-                    })
-                    save_state(state)
+                    # Any successful channel retires this discovery video.
+                    record_discovery_post(state, disc.get("subject", "?"),
+                                          dvideo, dcaption, args.slot, results)
                     try:
                         ready.unlink()
                     except Exception:
@@ -420,17 +475,33 @@ def main():
                     sys.exit(1)
                 return
         except Exception as _e:
-            print(f"[{args.slot}] discovery read failed ({_e}); falling back to clip",
+            # A network exception may happen after a channel accepted the
+            # post. Persist partial success and stop instead of falling back.
+            if "results" in locals() and any(
+                    value.startswith("OK") for value in results.values()):
+                record_discovery_post(state, disc.get("subject", "?"),
+                                      dvideo, dcaption, args.slot, results)
+                try:
+                    ready.unlink()
+                except OSError:
+                    pass
+            print(f"[{args.slot}] discovery processing failed ({_e}); refusing fallback to avoid a duplicate post",
                   file=sys.stderr)
+            sys.exit(1)
 
     # --- Fallback: rotating brand clip (existing behavior) -----------------
-    video, _, cta, hashtag = reserve_video(force=args.force_video)
+    video, _, cta, hashtag = reserve_video(force=args.force_video, dry_run=args.dry_run)
     theme = title_to_theme(video)
     media_url = f"{MEDIA_BASE_URL}/{video}"
 
     print(f"[{args.slot}] video: {video}")
     print(f"[{args.slot}] media_url: {media_url}")
-    caption = generate_caption(theme, hashtag, cta)
+    try:
+        caption = generate_caption(theme, hashtag, cta, _recent_captions(state))
+    except Exception:
+        if not args.dry_run:
+            release_video_reservation(video)
+        raise
     # Fallback path clamp: X rejects >280 weighted chars (see discovery clamp).
     if len(caption) > 260:
         caption = caption[:257].rsplit(None, 1)[0] + "…"
@@ -440,26 +511,33 @@ def main():
         print(f"[{args.slot}] DRY-RUN: skipping Buffer. Would post to {CHANNEL_SERVICES}.")
         return
 
-    channels = get_channels(token)
-    results = {}
-    for svc in CHANNEL_SERVICES:
-        ch = channels.get(svc)
-        if not ch:
-            print(f"[{args.slot}] WARN: channel '{svc}' not connected in Buffer; skipping",
-                  file=sys.stderr)
-            continue
-        res = create_post(token, ch["id"], caption, media_url, svc)
-        tn = res.get("__typename")
-        if tn == "PostActionSuccess":
-            results[svc] = f"OK id={res.get('post', {}).get('id')} status={res.get('post', {}).get('status')}"
-        else:
-            results[svc] = f"ERROR {res.get('message', res)}"
-        print(f"[{args.slot}] {svc}: {results[svc]}")
+    try:
+        channels = get_channels(token)
+        results = {}
+        for svc in CHANNEL_SERVICES:
+            ch = channels.get(svc)
+            if not ch:
+                print(f"[{args.slot}] WARN: channel '{svc}' not connected in Buffer; skipping",
+                      file=sys.stderr)
+                continue
+            res = create_post(token, ch["id"], caption, media_url, svc)
+            tn = res.get("__typename")
+            if tn == "PostActionSuccess":
+                results[svc] = f"OK id={res.get('post', {}).get('id')} status={res.get('post', {}).get('status')}"
+            else:
+                results[svc] = f"ERROR {res.get('message', res)}"
+            print(f"[{args.slot}] {svc}: {results[svc]}")
+    except Exception:
+        # The request may have reached Buffer before a network error surfaced.
+        # Keep the reservation until Buffer can be inspected, avoiding a
+        # possible duplicate share on retry.
+        raise
 
     # Rotation index was already reserved atomically at pick time. Record history
     # only after a successful post so we keep a per-clip audit trail.
     if any(v.startswith("OK") for v in results.values()):
         state = load_state()
+        state["reserved_videos"] = [v for v in state.get("reserved_videos", []) if v != video]
         state.setdefault("history", []).append({
             "video": video, "caption": caption,
             "slot": args.slot, "ts": datetime.datetime.utcnow().isoformat() + "Z"
@@ -467,7 +545,8 @@ def main():
         save_state(state)
         print(f"[{args.slot}] rotation advanced; posted {video}")
     else:
-        print(f"[{args.slot}] NO successful posts — video already reserved; rotation continues next run", file=sys.stderr)
+        release_video_reservation(video)
+        print(f"[{args.slot}] NO successful posts — released the clip so the same unpublished item can be retried", file=sys.stderr)
         sys.exit(1)
 
 

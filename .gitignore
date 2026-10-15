@@ -9,6 +9,7 @@
 !retrobyte_discovery_video.py
 !retrobyte_scheduler.py
 !retrobyte_heal.sh
+!RETROBYTE FRESH DISCOVERY TOPICS.md
 !media/
 !media/**
 !.discovery_state.json
