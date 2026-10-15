@@ -28,6 +28,7 @@ PCMedicalist's GPU windows).
 from __future__ import annotations
 
 import argparse
+import atexit
 import datetime as _dt
 import json
 import os
@@ -41,17 +42,25 @@ import requests
 
 # --- Paths ---------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
-MEDIA_DIR = Path("/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/media")
-OUTBOX = HERE / "generated"
+PCM_ROOT = Path("/media/pcmedicalist/PCM")
+PCMEDICALIST_DATA = PCM_ROOT / ".pcmedicalist"
+RETROBYTE_ROOT = PCM_ROOT / "pcmedicalist-retrobyte"
+BRAND_DIR = RETROBYTE_ROOT / "images" / "brand"
+if not os.path.ismount(PCM_ROOT):
+    raise RuntimeError(f"PCM drive is not mounted at {PCM_ROOT}; refusing home-disk fallback.")
+if not RETROBYTE_ROOT.is_dir():
+    raise RuntimeError(f"Canonical RetroByte assets are missing from the PCM drive: {RETROBYTE_ROOT}")
+# Keep intermediate frames/audio/video on PCM. The publishable MP4 alone is
+# copied into this repository's media/ folder for the configured raw GitHub URL.
+OUTBOX = PCMEDICALIST_DATA / "cache" / "retrobyte-render"
 OUTBOX.mkdir(parents=True, exist_ok=True)
 READY_FILE = HERE / "_discovery_ready.json"
-IMG_CACHE = HERE / "img_cache"
+IMG_CACHE = PCMEDICALIST_DATA / "image_cache" / "retrobyte-artifacts"
 IMG_CACHE.mkdir(parents=True, exist_ok=True)
 
 # --- Historical subject archive and fresh topic queue ---------------------
 SERIES_FILES = [
-    Path("/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/"
-         "RETROBYTE-OLD-TECH-DISCOVERY.md"),
+    RETROBYTE_ROOT / "RETROBYTE-OLD-TECH-DISCOVERY.md",
     HERE / "RETROBYTE OLD TECH DISCOVERY.md",  # sync copy fallback
 ]
 FRESH_TOPICS_FILE = HERE / "RETROBYTE FRESH DISCOVERY TOPICS.md"
@@ -95,8 +104,6 @@ def load_posted() -> set:
         posted.add(_topic_key(value))
     for item in publisher_state.get("history", []):
         posted.add(_topic_key(item.get("episode", "")))
-    generator_state = _read_json_history(STATE_FILE)
-    posted.add(_topic_key(generator_state.get("episode", "")))
     return {key for key in posted if key}
 
 
@@ -116,9 +123,9 @@ def record_posted(title: str, slot: int, fname: str):
     POSTED_REGISTRY.write_text(json.dumps(data, indent=2))
 
 
-# --- Real artifact imagery: Wikimedia Commons file title per subject -------
-# Public-domain / freely-licensed photos so the montage shows the ACTUAL
-# gadget (not a mascot on black). Keyed by subject title (case-insensitive).
+# --- Optional locally cached artifact imagery -----------------------------
+# The scheduled pipeline never downloads imagery. A subject photo is shown
+# only when an operator or local image workflow has placed it in IMG_CACHE.
 WIKIMEDIA_TITLES = {
     "floppy disk": "File:Floppy_disk_2009_G1.jpg",
     "walkman": "File:Sony_Walkman_TPS-L2.jpg",
@@ -163,15 +170,10 @@ def load_episodes() -> list[tuple[str, str]]:
     return out
 
 
-def next_episode(slot: int, force: str | None = None):
+def next_episode(slot: int, force: str | None = None, persist: bool = True):
     eps = load_episodes()
     n = len(eps)
-    st = {}
-    if STATE_FILE.exists():
-        try:
-            st = json.loads(STATE_FILE.read_text())
-        except Exception:
-            st = {}
+    st = _read_json_history(STATE_FILE)
     last = int(st.get("last_index", -1))
     # The old 25-subject list used this same state file. Its numeric index has
     # no meaning in the new catalog, so start the fresh queue at entry one.
@@ -187,17 +189,26 @@ def next_episode(slot: int, force: str | None = None):
         if _topic_key(eps[idx][0]) in posted:
             raise RuntimeError(f"Topic was already used and cannot be repeated: {eps[idx][0]}")
     else:
-        # Walk forward without wrapping into a recycled cycle.
-        for step in range(1, n + 1):
-            cand = (last + step) % n
-            if _topic_key(eps[cand][0]) not in posted:
-                idx = cand
-                break
+        # If the previous attempt failed before staging, retry that same
+        # unposted subject. A successful staged episode is already in registry.
+        pending = _topic_key(st.get("episode", ""))
+        pending_idx = next((i for i, (title, _angle) in enumerate(eps)
+                            if _topic_key(title) == pending), None)
+        if pending_idx is not None and pending not in posted:
+            idx = pending_idx
         else:
-            raise RuntimeError("No unseen topics remain; add new topics to the fresh catalog.")
+            # Walk forward without wrapping into a recycled cycle.
+            for step in range(1, n + 1):
+                cand = (last + step) % n
+                if _topic_key(eps[cand][0]) not in posted:
+                    idx = cand
+                    break
+            else:
+                raise RuntimeError("No unseen topics remain; add new topics to the fresh catalog.")
     title, slug = eps[idx]
-    STATE_FILE.write_text(json.dumps({"last_index": idx, "episode": title,
-                                      "ts": _dt.datetime.utcnow().isoformat() + "Z"}))
+    if persist:
+        STATE_FILE.write_text(json.dumps({"last_index": idx, "episode": title,
+                                          "ts": _dt.datetime.utcnow().isoformat() + "Z"}))
     return title, slug, idx
 
 
@@ -362,68 +373,59 @@ def fetch_artifact(subject: str) -> Path | None:
 
 
 # --- RetroByte character model ------------------------------------------
-CHARACTER_IMG = Path(
-    "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/"
-    "retrobyte-video-model.png")
+CHARACTER_IMG = BRAND_DIR / "retrobyte-video-model.png"
 
 # ---- 2026-09-25: rotating cast + backgrounds (operator directive) ----------
 # Foreground: 18 agent sprites (RGBA, transparent, ~330-363px) in brand/agents/.
 # Background: 35 FLUX2 room backdrops (1024x576) in brand/backgrounds/.
 # Per-episode pick is deterministic from the episode index so the same episode
 # always renders the same character/room, and consecutive episodes rotate both.
-AGENTS_DIR = Path(
-    "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/agents")
-BACKGROUNDS_DIR = Path(
-    "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/backgrounds")
+AGENTS_DIR = BRAND_DIR / "agents"
+BACKGROUNDS_DIR = BRAND_DIR / "backgrounds"
 
 
-def _rotating_asset(directory: Path, idx: int) -> Path | None:
-    """Deterministically pick directory-sorted asset #idx (wraps)."""
-    try:
-        files = sorted(p for p in directory.glob("*.png"))
-    except Exception:
-        return None
+def _rotating_asset(directory: Path, idx: int) -> Path:
+    """Pick a deterministic PCM-drive asset; missing brand assets stop renders."""
+    files = sorted(p for p in directory.glob("*.png"))
     if not files:
-        return None
+        raise FileNotFoundError(f"Required RetroByte visual assets missing: {directory}")
     return files[idx % len(files)]
 
 
-def episode_character(ep_idx: int) -> Path | None:
+def episode_character(ep_idx: int) -> Path:
     return _rotating_asset(AGENTS_DIR, ep_idx)
 
 
-def episode_background(ep_idx: int) -> Path | None:
+def episode_background(ep_idx: int) -> Path:
     return _rotating_asset(BACKGROUNDS_DIR, ep_idx)
 
 
-def _load_char_rgba(ep_idx: int) -> "Image.Image | None":
+def _load_char_rgba(ep_idx: int) -> "Image.Image":
     """Load the episode's agent sprite as RGBA (transparent foreground)."""
     p = episode_character(ep_idx)
-    if not p or not p.exists():
-        return None
+    if not p.exists():
+        raise FileNotFoundError(f"Required RetroByte character sprite missing: {p}")
     try:
         c = __import__("PIL").Image.open(p).convert("RGBA")
         return c
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(f"Cannot load RetroByte character sprite {p}: {exc}") from exc
 
 
 def _paste_char(img, scale=0.55, cy_frac=0.60, ep_idx: int | None = None,
                 bottom_center: bool = False, lift_px: int = 0):
     """Paste the agent sprite with ALPHA (replaces the old RGB square paste).
 
-    ep_idx=None falls back to the legacy CHARACTER_IMG behavior.
+    ep_idx=None uses the canonical PCM-drive character model.
     bottom_center=True anchors the sprite centered at the bottom band.
     lift_px raises the sprite off the bottom edge (keeps CTA visible).
     """
-    char = None
     if ep_idx is not None:
         char = _load_char_rgba(ep_idx)
-    if char is None and CHARACTER_IMG.exists():
-        # Legacy fallback: opaque square, old behavior.
+    else:
+        if not CHARACTER_IMG.is_file():
+            raise FileNotFoundError(f"Required RetroByte character image missing: {CHARACTER_IMG}")
         char = __import__("PIL").Image.open(CHARACTER_IMG).convert("RGBA")
-    if char is None:
-        return
     W, H = img.size
     target = int(W * scale)
     try:
@@ -455,30 +457,24 @@ def _paste_char(img, scale=0.55, cy_frac=0.60, ep_idx: int | None = None,
 
 
 def _bg_base(img_size: tuple[int, int], ep_idx: int, scrim: float = 0.45) -> "Image.Image":
-    """Build the card base: cover-fit episode background + dark scrim for
-    text contrast. Falls back to the old flat gradient colors if bg missing."""
+    """Build the card base from a required PCM-drive room image and scrim."""
     from PIL import Image, ImageDraw
     W, H = img_size
     bg_path = episode_background(ep_idx)
-    base = None
-    if bg_path and bg_path.exists():
-        try:
-            bg = Image.open(bg_path).convert("RGB")
-            try:
-                _rs = Image.Resampling.LANCZOS
-            except AttributeError:
-                _rs = Image.LANCZOS
-            # cover-fit: scale so both dims >= target, center-crop
-            sw, sh = bg.size
-            k = max(W / sw, H / sh)
-            bg = bg.resize((int(sw * k) + 1, int(sh * k) + 1), _rs)
-            bx = (bg.width - W) // 2
-            by = (bg.height - H) // 2
-            base = bg.crop((bx, by, bx + W, by + H))
-        except Exception:
-            base = None
-    if base is None:
-        base = Image.new("RGB", (W, H), (12, 8, 26))
+    if not bg_path.is_file():
+        raise FileNotFoundError(f"Required RetroByte room background missing: {bg_path}")
+    bg = Image.open(bg_path).convert("RGB")
+    try:
+        _rs = Image.Resampling.LANCZOS
+    except AttributeError:
+        _rs = Image.LANCZOS
+    # cover-fit: scale so both dims >= target, center-crop
+    sw, sh = bg.size
+    k = max(W / sw, H / sh)
+    bg = bg.resize((int(sw * k) + 1, int(sh * k) + 1), _rs)
+    bx = (bg.width - W) // 2
+    by = (bg.height - H) // 2
+    base = bg.crop((bx, by, bx + W, by + H))
     if scrim > 0:
         overlay = Image.new("RGBA", (W, H), (8, 6, 20, int(255 * scrim)))
         base = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
@@ -706,7 +702,7 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
         # recipe can produce marginal clips; montage is the safe posting path).
         if not _probe_ok_for_reels(base):
             print("[discovery-gen] T2VZ clip below platform minimums — "
-                  "falling back to montage", file=sys.stderr)
+                  "rejecting output; production will stop", file=sys.stderr)
             return None
         return str(base)
     except Exception as e:
@@ -859,17 +855,23 @@ def main():
                     help="Render only (no staging / no state advance).")
     args = ap.parse_args()
 
-    subject, hook, ep_idx = next_episode(args.slot, args.force_subject)
+    subject, hook, ep_idx = next_episode(
+        args.slot, args.force_subject,
+        persist=not (args.dry_run or args.test_render))
     print(f"[discovery-gen] episode#{ep_idx + 1} subject={subject} slot={args.slot}",
           flush=True)
 
     _subject_slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:36]
     _run_stamp = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H%M%SZ")
     stamp = f"{_run_stamp}-d{args.slot}-{_subject_slug}"
-    f_hook = OUTBOX / f"disc_frame_{stamp}_hook.png"
-    f_art = OUTBOX / f"disc_frame_{stamp}_art.png"
-    f_react = OUTBOX / f"disc_frame_{stamp}_react.png"
-    video = OUTBOX / f"disc_video_{stamp}.mp4"
+    run_dir = OUTBOX / stamp
+    run_dir.mkdir(parents=True, exist_ok=False)
+    cleanup_run_dir = lambda: shutil.rmtree(run_dir, ignore_errors=True)
+    atexit.register(cleanup_run_dir)
+    f_hook = run_dir / f"disc_frame_{stamp}_hook.png"
+    f_art = run_dir / f"disc_frame_{stamp}_art.png"
+    f_react = run_dir / f"disc_frame_{stamp}_react.png"
+    video = run_dir / f"disc_video_{stamp}.mp4"
 
     narration = narrate(subject, hook, ep_idx)
     print(f"[discovery-gen] narration: {narration[:80]}...", flush=True)
@@ -893,14 +895,19 @@ def main():
             pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
                              "pcmedicalist-social-publisher/pipelines")
             sys.path.insert(0, str(pipelines))
-            mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
+            mp3 = run_dir / f"disc_video_{stamp}.mp3"
             vr = synthesize_local_voice(narration, mp3)
             if vr.get("ok"):
                 build_montage(narration, frames, mp3, video)
-                print(f"[discovery-gen] TEST VIDEO: {video}")
+                if video.is_file():
+                    print(f"[discovery-gen] TEST VIDEO: {video}")
+                    # Keep an explicit test-render preview for operator review.
+                    atexit.unregister(cleanup_run_dir)
+        elif args.dry_run:
+            shutil.rmtree(run_dir, ignore_errors=True)
         return
 
-    mp3 = OUTBOX / f"disc_video_{stamp}.mp3"
+    mp3 = run_dir / f"disc_video_{stamp}.mp3"
     vr = synthesize_local_voice(narration, mp3)
     if not vr.get("ok") or not mp3.exists():
         print("[discovery-gen] TTS FAILED — not staging", file=sys.stderr)
@@ -908,9 +915,7 @@ def main():
 
     video_path = generate_t2v_clip(narration, subject, video)
     if not video_path:
-        print("[discovery-gen] T2VZ gen FAILED — falling back to montage",
-              file=sys.stderr)
-        video_path = build_montage(narration, frames, mp3, video)
+        raise RuntimeError("Local T2VZ generation failed or missed platform quality minimums; refusing a lower-fidelity montage fallback.")
     else:
         # Brand-lock: overlay real RetroByte mascot over the T2VZ motion.
         branded = video.with_name(video.stem + "_brand.mp4")
@@ -918,16 +923,14 @@ def main():
         if branded_path:
             video_path = branded_path
         else:
-            print("[discovery-gen] brand overlay FAILED — using raw T2VZ clip",
-                  file=sys.stderr)
+            raise RuntimeError("RetroByte brand overlay failed; refusing to publish unbranded T2VZ output.")
         # Overlay narrated audio + burned CC onto the motion clip.
         muxed = video.with_name(video.stem + "_narrated.mp4")
         muxed_path = mux_audio_cc(Path(video_path), mp3, narration, muxed)
         if muxed_path:
             video_path = muxed_path
         else:
-            print("[discovery-gen] audio mux FAILED — using silent T2VZ clip",
-                  file=sys.stderr)
+            raise RuntimeError("Fenrir narration/audio mux failed; refusing a silent or lower-quality clip.")
     if not video_path or not Path(video_path).exists():
         print("[discovery-gen] video build FAILED — not staging", file=sys.stderr)
         sys.exit(1)
@@ -936,12 +939,6 @@ def main():
     repo_media.mkdir(parents=True, exist_ok=True)
     dest = repo_media / Path(video_path).name
     shutil.copy(video_path, dest)
-    try:
-        agent_dest = Path(MEDIA_DIR) / Path(video_path).name
-        agent_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(video_path, agent_dest)
-    except Exception as _ce:
-        print(f"[discovery-gen] agent-mirror skip: {_ce}", file=sys.stderr)
 
     # Caption must fit X's 280-char limit on ALL channels. Buffer weights
     # multibyte chars (emoji, →, em-dash) and a 271-char caption was still
@@ -966,6 +963,9 @@ def main():
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
     record_posted(subject, args.slot, dest.name)
+    # The published MP4 now lives in this repo's media/ directory. Remove only
+    # this run's temporary frames, audio, and diffusion files from PCM cache.
+    shutil.rmtree(run_dir, ignore_errors=True)
 
     # ---- Persist staged media to the git remote so raw.githubusercontent.com
     #      can serve it to Buffer's shareNow. Without this the video exists

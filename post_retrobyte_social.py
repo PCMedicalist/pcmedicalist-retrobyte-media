@@ -40,7 +40,9 @@ from pathlib import Path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = "/media/pcmedicalist/PCM/.pcmedicalist/.env.retrobyte"
 MEDIA_BASE_URL = "https://raw.githubusercontent.com/PCMedicalist/pcmedicalist-retrobyte-media/main/media"
-MEDIA_DIR = "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/media"
+# Fallback clips must come from the same published media/ tree used by
+# MEDIA_BASE_URL, so every selected filename resolves at Buffer's raw URL.
+MEDIA_DIR = os.path.join(SCRIPT_DIR, "media")
 STATE_FILE = os.environ.get(
     "RETROBYTE_STATE_FILE",
     os.path.join(SCRIPT_DIR, ".retrobyte_post_state.json"))
