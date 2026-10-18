@@ -1,12 +1,14 @@
 """Offline checks for production media gates and complete narration."""
 import importlib.util
 import json
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
 spec = importlib.util.spec_from_file_location('retrobyte_generation', ROOT/'retrobyte_discovery_video.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)

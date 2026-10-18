@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from retrobyte_video_format import FORMAT, PROFILE_SHA256
 
 
 def generate(subject, angle, output):
@@ -30,7 +31,7 @@ def generate(subject, angle, output):
     dtype = torch.float16 if device == 'cuda' else torch.float32
     print(f'[still-scene] local SD1.5 device={device} seed={seed}',flush=True)
     pipe = StableDiffusionPipeline.from_pretrained(
-        'stable-diffusion-v1-5/stable-diffusion-v1-5', local_files_only=True,
+        FORMAT['scene']['model'], local_files_only=True,
         torch_dtype=dtype, safety_checker=None, requires_safety_checker=False).to(device)
     pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
     pipe.enable_vae_slicing()
@@ -39,10 +40,10 @@ def generate(subject, angle, output):
     if len(pipe.tokenizer(prompt).input_ids) > pipe.tokenizer.model_max_length:
         raise ValueError("Still-scene prompt exceeds the local model's token budget")
     image = pipe(prompt, negative_prompt=('devices, computer, phone, tablet, laptop, ' if 'palmpilot' in subject.casefold() else '')+'collage, multiple objects, warped, tilted camera, dutch angle, letters, text, logo, people, robot, clutter',
-                 height=640, width=640, num_inference_steps=28, guidance_scale=7.0,
+                 height=FORMAT['scene']['size'], width=FORMAT['scene']['size'], num_inference_steps=FORMAT['scene']['steps'], guidance_scale=7.0,
                  generator=torch.Generator(device=device).manual_seed(seed)).images[0]
     output = Path(output);output.parent.mkdir(exist_ok=True,parents=True);image.save(output)
-    output.with_suffix('.json').write_text(json.dumps({'model':'SD1.5','device':device,'seed':seed,'prompt':prompt,'sha256':hashlib.sha256(output.read_bytes()).hexdigest()},indent=2))
+    output.with_suffix('.json').write_text(json.dumps({'model':FORMAT['scene']['model'],'profile_sha256':PROFILE_SHA256,'device':device,'seed':seed,'prompt':prompt,'sha256':hashlib.sha256(output.read_bytes()).hexdigest()},indent=2))
     return str(output)
 
 if __name__ == '__main__':

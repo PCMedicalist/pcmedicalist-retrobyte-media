@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import requests
+from retrobyte_video_format import FORMAT, validate_render
 
 # --- Paths ---------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
@@ -51,7 +52,7 @@ KOKORO_ROOT = Path("/media/pcmedicalist/PCM/.pcmedicalist/tts/kokoro")
 KOKORO_SITE_PACKAGES = KOKORO_ROOT / "python-packages"
 KOKORO_MODEL = KOKORO_ROOT / "v1.0/kokoro-v1.0.onnx"
 KOKORO_VOICES = KOKORO_ROOT / "v1.0/voices-v1.0.bin"
-RETROBYTE_TTS_VOICE = "am_fenrir"
+RETROBYTE_TTS_VOICE = FORMAT["voice"]["id"]
 
 
 def _topic_key(value: str) -> str:
@@ -336,7 +337,7 @@ def _rotating_asset(directory: Path, idx: int) -> Path:
 
 def episode_character(ep_idx: int) -> Path:
     return Path(os.environ.get("RETROBYTE_VIDEO_AVATAR",
-        "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/retrobyte-video-avatar.mp4"))
+        FORMAT["avatar"]["path"]))
 
 
 def episode_background(ep_idx: int) -> Path:
@@ -638,7 +639,7 @@ def brand_overlay(clip_path: Path, out_path: Path,
     from generators.video_avatar import overlay_avatar
     avatar = Path(os.environ.get(
         "RETROBYTE_VIDEO_AVATAR",
-        "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/retrobyte-video-avatar.mp4"))
+        FORMAT["avatar"]["path"]))
     try:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -797,6 +798,9 @@ def main():
                        "avatar_source": str(episode_character(ep_idx)),
                        "avatar_sha256": hashlib.sha256(episode_character(ep_idx).read_bytes()).hexdigest(),
                        "social_post_sent": False})
+    print("[discovery-gen] validating the approved RetroByte format", flush=True)
+    provenance["format_validation"] = validate_render(video, provenance)
+    (run_dir / "format-check.json").write_text(json.dumps(provenance["format_validation"], indent=2))
     (run_dir / "render.json").write_text(json.dumps(provenance, indent=2))
     if not _probe_ok_for_reels(video):
         raise RuntimeError("Completed video failed platform media validation")
@@ -837,6 +841,8 @@ def main():
              "scene_mode": "stationary_local_diffusion",
              "scene_sha256": provenance["scene_sha256"],
              "captions_burned": True,
+             "voice": provenance["voice"],
+             "format_validation": provenance["format_validation"],
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
     record_posted(subject, args.slot, dest.name)

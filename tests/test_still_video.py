@@ -9,6 +9,7 @@ from PIL import Image, ImageChops, ImageStat, ImageFont
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from retrobyte_still_video import render, caption_cues, CAPTION_BOX, BOLD
 import retrobyte_discovery_video as generator
+from retrobyte_video_format import FORMAT, file_hash, validate_render
 
 class StillVideoTests(unittest.TestCase):
     def test_script_is_grounded(self):
@@ -26,6 +27,10 @@ class StillVideoTests(unittest.TestCase):
             subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=440:duration=3.2',str(audio)],capture_output=True,check=True)
             avatar=Path('/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/retrobyte-video-avatar.mp4')
             result=render(scene,audio,avatar,'The PalmPilot','Pocket notes','Your calendar had a stylus. Would you use one today?',output)
+            result.update({'voice':'kokoro-onnx:am_fenrir','avatar_source':str(avatar),
+                           'avatar_sha256':file_hash(avatar),
+                           'narration':'Your calendar had a stylus. Would you use one today?'})
+            self.assertTrue(validate_render(output,result)['passed'])
             import textwrap
             for cue in result['caption_cues']:
                 font=ImageFont.truetype(BOLD,cue['font_px'])
@@ -43,7 +48,8 @@ class StillVideoTests(unittest.TestCase):
             # Avatar changes across time, while the background stays fixed.
             diff=ImageChops.difference(frames[0].crop((620,1100,1010,1600)),frames[1].crop((620,1100,1010,1600)))
             self.assertGreater(sum(ImageStat.Stat(diff).mean),1)
-            pixels=list(frames[0].crop((70,1680,1010,1805)).getdata())
+            region=frames[0].crop((70,1680,1010,1805))
+            pixels=list(region.get_flattened_data() if hasattr(region,'get_flattened_data') else region.getdata())
             self.assertGreater(sum(1 for r,g,b in pixels if min(r,g,b)>200),500)
 
 if __name__=='__main__':unittest.main()

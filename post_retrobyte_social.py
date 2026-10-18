@@ -1,26 +1,8 @@
 #!/usr/bin/env python3
-"""
-RetroByte Social Poster — posts a rotating RetroByte video clip with an
-in-voice caption to X / Instagram / TikTok via RetroByte's Buffer account.
+"""Publish validated RetroByte episodes to X, Instagram and TikTok via Buffer.
 
-Design notes:
-- Media is served from a PUBLIC GitHub raw URL (Buffer fetches media by URL).
-  MEDIA_BASE_URL points at the public media repo. Repoint here when the
-  videos move to the DreamHost VPS (e.g. https://<vps-host>/retrobyte/media/).
-- Caption is generated LOCALLY with the retrobyte:3b Ollama model (no cloud LLM),
-  to keep the persona voice and honor the local-inference directive.
-- Posting is SCHEDULED (addToQueue) — never shareNow — so each post lands at the
-  time the cron job fires. The cron schedule controls exposure timing.
-- State file tracks posted/reserved clips; a used video is never recycled.
-
-Usage:
-  python3 post_retrobyte_social.py --slot morning   # real post
-  python3 post_retrobyte_social.py --slot evening --dry-run   # no Buffer calls
-  python3 post_retrobyte_social.py --slot morning --force-video retrobyte-good-morning.mp4
-
-Env (read from /media/pcmedicalist/PCM/.pcmedicalist/.env.retrobyte):
-  BUFFER_ACCESS_TOKEN
-  RETROBYTE_TWITTER_USERNAME / RETROBYTE_INSTAGRAM_USERNAME / RETROBYTE_TIKTOK_USERNAME (optional, used only for logging)
+Only the versioned approved format is eligible. Legacy clip rotation is disabled.
+--dry-run validates the staged episode without sending a social post.
 """
 import argparse
 import datetime
@@ -33,6 +15,7 @@ import sys
 import fcntl
 import urllib.request
 from pathlib import Path
+from retrobyte_video_format import validate_publish_manifest
 
 # ---------------------------------------------------------------------------
 # Config
@@ -364,7 +347,6 @@ def main():
                     help="Which posting slot (affects log label only).")
     ap.add_argument("--dry-run", action="store_true",
                     help="Generate caption + resolve video but DO NOT call Buffer.")
-    ap.add_argument("--force-video", default=None, help="Force a specific video filename.")
     args = ap.parse_args()
 
     env = load_env(ENV_FILE)
@@ -401,6 +383,7 @@ def main():
             if not _exists and dvideo:
                 _exists = os.path.exists(os.path.join(MEDIA_DIR, dvideo))
             if dvideo and dcaption and _exists:
+                validate_publish_manifest(disc)
                 used_discovery = {str(item.get("video", ""))
                                   for item in state.get("history", [])}
                 used_discovery.update(state.get("reserved_videos", []))
@@ -491,65 +474,8 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
 
-    # --- Fallback: rotating brand clip (existing behavior) -----------------
-    video, _, cta, hashtag = reserve_video(force=args.force_video, dry_run=args.dry_run)
-    theme = title_to_theme(video)
-    media_url = f"{MEDIA_BASE_URL}/{video}"
-
-    print(f"[{args.slot}] video: {video}")
-    print(f"[{args.slot}] media_url: {media_url}")
-    try:
-        caption = generate_caption(theme, hashtag, cta, _recent_captions(state))
-    except Exception:
-        if not args.dry_run:
-            release_video_reservation(video)
-        raise
-    # Fallback path clamp: X rejects >280 weighted chars (see discovery clamp).
-    if len(caption) > 260:
-        caption = caption[:257].rsplit(None, 1)[0] + "…"
-    print(f"[{args.slot}] caption: {caption}")
-
-    if args.dry_run:
-        print(f"[{args.slot}] DRY-RUN: skipping Buffer. Would post to {CHANNEL_SERVICES}.")
-        return
-
-    try:
-        channels = get_channels(token)
-        results = {}
-        for svc in CHANNEL_SERVICES:
-            ch = channels.get(svc)
-            if not ch:
-                print(f"[{args.slot}] WARN: channel '{svc}' not connected in Buffer; skipping",
-                      file=sys.stderr)
-                continue
-            res = create_post(token, ch["id"], caption, media_url, svc)
-            tn = res.get("__typename")
-            if tn == "PostActionSuccess":
-                results[svc] = f"OK id={res.get('post', {}).get('id')} status={res.get('post', {}).get('status')}"
-            else:
-                results[svc] = f"ERROR {res.get('message', res)}"
-            print(f"[{args.slot}] {svc}: {results[svc]}")
-    except Exception:
-        # The request may have reached Buffer before a network error surfaced.
-        # Keep the reservation until Buffer can be inspected, avoiding a
-        # possible duplicate share on retry.
-        raise
-
-    # Rotation index was already reserved atomically at pick time. Record history
-    # only after a successful post so we keep a per-clip audit trail.
-    if any(v.startswith("OK") for v in results.values()):
-        state = load_state()
-        state["reserved_videos"] = [v for v in state.get("reserved_videos", []) if v != video]
-        state.setdefault("history", []).append({
-            "video": video, "caption": caption,
-            "slot": args.slot, "ts": datetime.datetime.utcnow().isoformat() + "Z"
-        })
-        save_state(state)
-        print(f"[{args.slot}] rotation advanced; posted {video}")
-    else:
-        release_video_reservation(video)
-        print(f"[{args.slot}] NO successful posts — released the clip so the same unpublished item can be retried", file=sys.stderr)
-        sys.exit(1)
+    print(f"[{args.slot}] SKIP: no video staged with the approved RetroByte format; legacy fallback is disabled.")
+    return
 
 
 if __name__ == "__main__":

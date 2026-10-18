@@ -28,3 +28,9 @@
 # Review media is separate from the social poster input directory.
 !reviews/
 !reviews/retrobyte-palmpilot-still-review-20261018.mp4
+
+# Approved production format contract and gates.
+!retrobyte_video_format.json
+!retrobyte_video_format.py
+!tests/test_video_format.py
+!AGENTS.md

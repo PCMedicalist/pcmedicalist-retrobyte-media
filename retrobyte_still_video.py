@@ -10,10 +10,11 @@ COS = '/home/pcmedicalist/pcmedicalist/pcmedicalist-content-os'
 if COS not in sys.path:
     sys.path.insert(0, COS)
 from generators.video_avatar import overlay_avatar
+from retrobyte_video_format import FORMAT, PROFILE_SHA256, caption_layout, title_layout, detail_layout
 
-SIZE = (1080, 1920)
-AVATAR_BOX = (620, 1220, 390, 380)
-CAPTION_BOX = (70, 1650, 1010, 1810)
+SIZE = (FORMAT['canvas']['width'], FORMAT['canvas']['height'])
+AVATAR_BOX = tuple(FORMAT['avatar']['box'])
+CAPTION_BOX = tuple(FORMAT['captions']['box'])
 FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 
@@ -41,31 +42,36 @@ def draw_pda(draw):
 
 
 def compose_frame(scene, subject, angle, output):
-    canvas=Image.new('RGB',SIZE,(13,16,25));d=ImageDraw.Draw(canvas)
-    amber=(255,184,72);white=(241,242,247);blue=(87,203,255)
-    d.text((70,110),'RETROBYTE DISCOVERS',font=ImageFont.truetype(BOLD,35),fill=amber)
+    canvas=Image.new('RGB',SIZE,tuple(FORMAT['colors']['background']));d=ImageDraw.Draw(canvas)
+    amber=tuple(FORMAT['colors']['accent']);white=tuple(FORMAT['colors']['text']);blue=tuple(FORMAT['colors']['secondary'])
+    d.text((70,110),FORMAT['copy']['header'],font=ImageFont.truetype(BOLD,35),fill=amber)
     title=subject.removeprefix('The ').upper()
-    lines=textwrap.wrap(title,18)
-    for i,line in enumerate(lines[:2]):
-        d.text((64,180+i*86),line,font=ImageFont.truetype(BOLD,72),fill=white)
+    lines,title_px=title_layout(title)
+    for i,line in enumerate(lines):
+        d.text((64,180+i*86),line,font=ImageFont.truetype(BOLD,title_px),fill=white)
     # One fixed image: never animate, translate, zoom, or loop its camera.
     im=Image.open(scene).convert('RGB').resize((800,800),Image.Resampling.LANCZOS)
     canvas.paste(im,(140,400));d=ImageDraw.Draw(canvas)
     d.rectangle((140,400,940,1200),outline=(63,81,103),width=3)
     if 'palmpilot' in subject.casefold():
         draw_pda(d)
-    d.text((76,354),'A LITTLE TECH TIME TRAVEL',font=ImageFont.truetype(FONT,26),fill=blue)
+    d.text((76,354),FORMAT['copy']['eyebrow'],font=ImageFont.truetype(FONT,26),fill=blue)
     d.text((72,1395),'Before smartphones…' if 'palmpilot' in subject.casefold() else 'Remember this?',font=ImageFont.truetype(BOLD,37),fill=amber)
-    d.text((72,1460),'Appointments.' if 'palmpilot' in subject.casefold() else 'A little piece',font=ImageFont.truetype(BOLD,44),fill=white)
-    d.text((72,1520),'Pocket notes.' if 'palmpilot' in subject.casefold() else 'of tech history.',font=ImageFont.truetype(BOLD,44),fill=white)
+    details,detail_px,line_spacing=detail_layout(subject,angle)
+    for i,line in enumerate(details):
+        d.text((72,1460+i*line_spacing),line,font=ImageFont.truetype(BOLD,detail_px),fill=white)
     d.rounded_rectangle(CAPTION_BOX,radius=16,fill=(25,31,44))
-    d.text((70,1850),'Would you use one today?',font=ImageFont.truetype(FONT,32),fill=blue)
+    d.text((70,1850),FORMAT['copy']['cta'],font=ImageFont.truetype(FONT,32),fill=blue)
     canvas.save(output)
     return output
 
 
 def caption_cues(script,duration):
-    words=script.split();groups=[' '.join(words[i:i+5]) for i in range(0,len(words),5)]
+    words=script.split()
+    if not words or duration <= 0:
+        raise ValueError('Complete narration is required for burned captions')
+    limit=FORMAT['captions']['max_words_per_cue']
+    groups=[' '.join(words[i:i+limit]) for i in range(0,len(words),limit)]
     cues=[];offset=0
     for group in groups:
         count=len(group.split());end=offset+count
@@ -82,17 +88,14 @@ def render(scene,audio,avatar,subject,angle,narration,output):
     cues=caption_cues(narration,duration)
     filters=[]
     for i,cue in enumerate(cues):
-        text=output.with_name(output.stem+f'-cue-{i}.txt');text.write_text('\n'.join(textwrap.wrap(cue['text'],38)),encoding='utf-8')
-        font_px = 43
-        lines = text.read_text().splitlines()
-        while font_px > 28 and max(ImageFont.truetype(BOLD,font_px).getlength(line) for line in lines) > 900:
-            font_px -= 1
+        body, font_px = caption_layout(cue['text'])
+        text=output.with_name(output.stem+f'-cue-{i}.txt');text.write_text(body,encoding='utf-8')
         cue['font_px'] = font_px
-        filters.append(f"drawtext=fontfile={BOLD}:textfile='{text}':expansion=none:fontsize={font_px}:fontcolor=white:x=(w-text_w)/2:y=1705:enable='gte(t,{cue['start']})*lt(t,{cue['end']})'")
+        filters.append(f"drawtext=fontfile={BOLD}:textfile='{text}':expansion=none:fontsize={font_px}:fontcolor=white:x=(w-text_w)/2:y={FORMAT['captions']['y']}:enable='gte(t,{cue['start']})*lt(t,{cue['end']})'")
     filter_path=output.with_suffix('.filter');filter_path.write_text('[0:v]'+','.join(filters)+'[out]')
     base=output.with_name(output.stem+'-captioned.mp4')
     result=subprocess.run(['ffmpeg','-y','-v','error','-filter_complex_threads','1','-loop','1','-framerate','30','-i',str(frame),'-i',str(audio),'-filter_complex_script',str(filter_path),'-map','[out]','-map','1:a','-c:v','libx264','-preset','veryfast','-crf','20','-threads','2','-pix_fmt','yuv420p','-c:a','aac','-t',str(duration),'-movflags','+faststart',str(base)],capture_output=True,text=True,timeout=300)
     if result.returncode:
         raise RuntimeError(result.stderr[-1600:])
     overlay_avatar(base,Path(avatar),output,AVATAR_BOX)
-    return {'path':str(output),'duration':duration,'scene_sha256':__import__('hashlib').sha256(Path(scene).read_bytes()).hexdigest(),'scene_mode':'stationary_local_diffusion','subject_visual':'interpretive_pda_illustration' if 'palmpilot' in subject.casefold() else 'diffusion_scene','avatar_box':AVATAR_BOX,'caption_box':CAPTION_BOX,'caption_cues':cues}
+    return {'path':str(output),'duration':duration,'scene_sha256':__import__('hashlib').sha256(Path(scene).read_bytes()).hexdigest(),'format_id':FORMAT['id'],'profile_sha256':PROFILE_SHA256,'scene_mode':FORMAT['scene']['mode'],'subject_visual':'interpretive_pda_illustration' if 'palmpilot' in subject.casefold() else 'diffusion_scene','avatar_box':AVATAR_BOX,'caption_box':CAPTION_BOX,'caption_cues':cues}
