@@ -14,3 +14,7 @@
 !media/**
 !.discovery_state.json
 
+
+# Offline regression coverage for scheduled video generation.
+!tests/
+!tests/test_generation_media.py

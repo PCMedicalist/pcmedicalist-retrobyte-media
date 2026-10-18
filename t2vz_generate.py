@@ -27,6 +27,7 @@ from pathlib import Path
 
 import torch
 from diffusers import TextToVideoZeroPipeline, DDIMScheduler
+from diffusers.pipelines.text_to_video_synthesis.pipeline_text_to_video_zero import CrossFrameAttnProcessor2_0
 from diffusers.utils import export_to_video
 from PIL import Image
 
@@ -69,9 +70,11 @@ def generate(
 
     try:
         pipe = TextToVideoZeroPipeline.from_pretrained(
-            model, torch_dtype=torch.float16
+            model, torch_dtype=torch.float16, local_files_only=True
         ).to("cuda")
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+        pipe.unet.set_attn_processor(CrossFrameAttnProcessor2_0(batch_size=2))
+        pipe.enable_vae_slicing()
         # Disable the NSFW safety checker: it returns black frames and breaks the
         # pipeline's return type (ndarray instead of PIL). RetroByte prompts are
         # clean; we don't want a black clip.
@@ -83,21 +86,29 @@ def generate(
         t0 = max(1, int(steps * 0.85))
         t1 = max(t0 + 1, int(steps * 0.95))
 
-        out = pipe(
-            prompt,
-            num_inference_steps=steps,
-            video_length=frames,
-            height=height,
-            width=width,
-            t0=t0,
-            t1=t1,
-        )
-        imgs = [
-            Image.fromarray((i * 255).astype("uint8"))
-            if not isinstance(i, Image.Image)
-            else i
-            for i in out.images
-        ]
+        # Bound GPU memory: every chunk attends the same seeded first frame.
+        # Avoid sending all 96 frames through the UNet in one allocation.
+        imgs = []
+        for start in range(0, frames, 7):
+            ids = ([0] + list(range(max(1, start), min(frames, start + 7))))
+            if start == 0:
+                ids = list(range(min(frames, 7)))
+            if len(ids) == 1 and start:
+                continue
+            print(f"[t2vz] frames {ids[1] if start else 0}..{ids[-1]}/{frames-1}", flush=True)
+            out = pipe(
+                prompt, num_inference_steps=steps, video_length=len(ids),
+                frame_ids=ids, height=height, width=width, t0=t0, t1=t1,
+                generator=torch.Generator(device="cuda").manual_seed(42),
+            )
+            chunk = out.images if start == 0 else out.images[1:]
+            imgs.extend(
+                Image.fromarray((i * 255).clip(0, 255).astype("uint8"))
+                if not isinstance(i, Image.Image) else i for i in chunk)
+            del out
+            torch.cuda.empty_cache()
+        if len(imgs) != frames:
+            raise RuntimeError(f"Generated {len(imgs)} frames; expected {frames}")
         export_to_video(imgs, str(out_path), fps=fps)
         rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
         return {"ok": True, "frames": len(imgs), "rss_mb": rss, "path": str(out_path)}
@@ -118,7 +129,9 @@ def main() -> None:
     args = ap.parse_args()
     h, w = (int(x) for x in args.size.split("*"))
     res = generate(args.prompt, args.out, args.steps, args.frames, h, w, args.fps, args.model)
-    print(json.dumps(res))
+    print(json.dumps(res), flush=True)
+    if not res.get("ok"):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -616,45 +616,23 @@ def make_reaction_frame(subject: str, out_path: Path,
 
 
 def _probe_ok_for_reels(path: Path) -> bool:
-    """Return True if the clip meets Instagram Reels + TikTok minimums:
-    >=3s duration, >=23 fps, >=360px height (TikTok both 9:16 and 1:1 need >=360px)."""
+    """Read named ffprobe fields; CSV stream/format ordering is not stable."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "error",
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "format=duration:stream=avg_frame_rate,height",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return False
-        lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-        if not lines:
-            return False
-        dur = float(lines[0])
-        # avg_frame_rate may be like "30/1" or "29.97"
-        fps_raw = lines[1] if len(lines) > 1 else "0"
-        if "/" in fps_raw:
-            num, den = fps_raw.split("/", 1)
-            fps = float(num) / (float(den) if float(den) else 1.0)
-        else:
-            fps = float(fps_raw)
-        h = int(lines[2].split(",")[0]) if len(lines) > 2 and "," in lines[2] else None
-        if h is None:
-            # try per-stream height line
-            for ln in lines[1:]:
-                if ln.replace("/", "").replace(".", "").isdigit():
-                    continue
-                parts = ln.split(",")
-                for p in parts:
-                    pv = p.strip()
-                    if pv.isdigit() and int(pv) > 0:
-                        h = int(pv); break
-                if h:
-                    break
-        print(f"[discovery-gen] probe: dur={dur:.2f}s fps={fps:.2f} h={h}",
-              file=sys.stderr)
-        return dur >= 3.0 and fps >= 23 and (h or 0) >= 360
-    except Exception as e:
-        print(f"[discovery-gen] probe exc: {e}", file=sys.stderr)
+             "-of", "json", str(path)], capture_output=True, text=True,
+            check=True, timeout=30)
+        data = json.loads(r.stdout)
+        stream = data["streams"][0]
+        duration = float(data["format"]["duration"])
+        num, den = stream["avg_frame_rate"].split("/")
+        fps = float(num) / float(den)
+        height = int(stream["height"])
+        print(f"[discovery-gen] probe: dur={duration:.2f}s fps={fps:.2f} h={height}", flush=True)
+        return duration >= 3 and fps >= 23 and height >= 360
+    except Exception as exc:
+        print(f"[discovery-gen] probe failed: {exc}", file=sys.stderr)
         return False
 
 
@@ -688,12 +666,15 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
     try:
         # 3s @ 24fps = 72 frames minimum to clear Reels (>=3s + >=23fps) and
         # TikTok (>=3s + >=360px). Use 30fps for headroom above the 23fps floor.
-        r = subprocess.run(
-            [str(venv_py), str(t2vz), "--prompt", prompt, "--out", str(base),
-             "--steps", "25", "--frames", "96", "--size", "576*576", "--fps", "30"],
-            capture_output=True, text=True, timeout=600)
+        log_path = base.with_suffix(".log")
+        print(f"[discovery-gen] motion generation log: {log_path}", flush=True)
+        with log_path.open("w", encoding="utf-8") as log:
+            r = subprocess.run(
+                [str(venv_py), str(t2vz), "--prompt", prompt, "--out", str(base),
+                 "--steps", "25", "--frames", "96", "--size", "576*576", "--fps", "30"],
+                stdout=log, stderr=subprocess.STDOUT, text=True, timeout=1200)
         if r.returncode != 0 or not base.exists():
-            print(f"[discovery-gen] t2vz fail: {(r.stderr or r.stdout)[-400:]}",
+            print(f"[discovery-gen] t2vz fail: {log_path.read_text()[-2400:]}",
                   file=sys.stderr)
             return None
         # Validate platform minimums — fall back to montage if T2VZ still came
@@ -733,33 +714,22 @@ def brand_overlay(clip_path: Path, out_path: Path,
 
 
 def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path) -> str | None:
-    """Add narrated audio to the T2VZ motion clip via ffmpeg (reliable stream copy).
-
-    NOTE (recipe gotcha #6): mux_reel expects an IMAGE, not an MP4. We use plain
-    ffmpeg. Burned CC is skipped here (fragile ASS pass) — the narration audio is
-    the must-have; caption text is delivered in the post body instead.
-    """
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
+    """Loop generated motion to the complete narration; never cut speech."""
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "json", str(audio_path)], capture_output=True, text=True, check=True)
+        duration = float(json.loads(probe.stdout)["format"]["duration"])
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-stream_loop", "-1", "-i", str(clip_path),
+             "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0",
+             "-c:v", "copy", "-c:a", "aac", "-t", str(duration),
+             "-movflags", "+faststart", str(out_path)],
+            capture_output=True, text=True, timeout=180, check=True)
+        return str(out_path)
+    except Exception as exc:
+        print(f"[discovery-gen] narration mux failed: {exc}", file=sys.stderr)
         return None
-    tmp = out_path.with_name(out_path.stem + "_mixed.mp4")
-    r1 = subprocess.run(
-        [ffmpeg, "-y", "-i", str(clip_path), "-i", str(audio_path),
-         "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(tmp)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-    if r1.returncode != 0 or not tmp.exists():
-        r1 = subprocess.run(
-            [ffmpeg, "-y", "-i", str(clip_path), "-i", str(audio_path),
-             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-c:a", "aac",
-             "-shortest", str(tmp)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-    if r1.returncode != 0 or not tmp.exists():
-        print(f"[discovery-gen] audio mux fail: {(r1.stderr or b'')[-300:].decode(errors='ignore')}",
-              file=sys.stderr)
-        return None
-    # tmp is the final narrated clip (audio + video, CC delivered in post text)
-    shutil.move(str(tmp), str(out_path))
-    return str(out_path)
 
 
 def build_montage(narration: str, frames: list[Path], audio_path: Path,
@@ -857,14 +827,15 @@ def main():
     run_dir = OUTBOX / stamp
     run_dir.mkdir(parents=True, exist_ok=False)
     cleanup_run_dir = lambda: shutil.rmtree(run_dir, ignore_errors=True)
-    atexit.register(cleanup_run_dir)
+    # Failed runs retain their logs and intermediate media for diagnosis.
     f_hook = run_dir / f"disc_frame_{stamp}_hook.png"
     f_art = run_dir / f"disc_frame_{stamp}_art.png"
     f_react = run_dir / f"disc_frame_{stamp}_react.png"
     video = run_dir / f"disc_video_{stamp}.mp4"
 
     narration = narrate(subject, hook, ep_idx)
-    print(f"[discovery-gen] narration: {narration[:80]}...", flush=True)
+    (run_dir / "narration.txt").write_text(narration, encoding="utf-8")
+    print(f"[discovery-gen] narration: {narration}", flush=True)
 
     # Rotating cast + room: episode index drives both picks (deterministic).
     _char_p = episode_character(ep_idx)
@@ -900,27 +871,21 @@ def main():
     mp3 = run_dir / f"disc_video_{stamp}.mp3"
     vr = synthesize_local_voice(narration, mp3)
     if not vr.get("ok") or not mp3.exists():
-        print("[discovery-gen] TTS FAILED — not staging", file=sys.stderr)
+        print(f"[discovery-gen] TTS FAILED — not staging: {vr.get('error')}", file=sys.stderr)
         sys.exit(1)
 
     video_path = generate_t2v_clip(narration, subject, video)
     if not video_path:
         raise RuntimeError("Local T2VZ generation failed or missed platform quality minimums; refusing a lower-fidelity montage fallback.")
     else:
-        # Brand-lock: loop the keyed approved avatar over gadget motion.
-        branded = video.with_name(video.stem + "_brand.mp4")
-        branded_path = brand_overlay(Path(video_path), branded, ep_idx=ep_idx)
-        if branded_path:
-            video_path = branded_path
-        else:
-            raise RuntimeError("RetroByte brand overlay failed; refusing to publish unbranded T2VZ output.")
-        # Overlay narrated audio + burned CC onto the motion clip.
         muxed = video.with_name(video.stem + "_narrated.mp4")
         muxed_path = mux_audio_cc(Path(video_path), mp3, narration, muxed)
-        if muxed_path:
-            video_path = muxed_path
-        else:
-            raise RuntimeError("Fenrir narration/audio mux failed; refusing a silent or lower-quality clip.")
+        if not muxed_path:
+            raise RuntimeError("Narration mux failed; refusing a silent or truncated clip.")
+        branded = video.with_name(video.stem + "_brand.mp4")
+        video_path = brand_overlay(Path(muxed_path), branded, ep_idx=ep_idx)
+        if not video_path:
+            raise RuntimeError("Approved avatar overlay failed; refusing unbranded output.")
     if not video_path or not Path(video_path).exists():
         print("[discovery-gen] video build FAILED — not staging", file=sys.stderr)
         sys.exit(1)
@@ -949,13 +914,18 @@ def main():
     assert len(caption) <= CAPTION_MAX, (
         f"staged caption {len(caption)} chars exceeds {CAPTION_MAX}")
     ready = {"video": str(dest), "video_name": dest.name, "caption": caption,
-             "subject": subject, "slot": args.slot,
+             "subject": subject, "slot": args.slot, "narration": narration,
              "avatar_source": str(episode_character(ep_idx)),
              "avatar_sha256": hashlib.sha256(episode_character(ep_idx).read_bytes()).hexdigest(),
              "avatar_green_screen_removed": True,
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
     record_posted(subject, args.slot, dest.name)
+    audit_dir = HERE / "audit" / stamp
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "generation.json").write_text(json.dumps(ready, indent=2))
+    for evidence in list(run_dir.glob("*.log")) + list(run_dir.glob("*.txt")):
+        shutil.copy2(evidence, audit_dir / evidence.name)
     # The published MP4 now lives in this repo's media/ directory. Remove only
     # this run's temporary frames, audio, and diffusion files from PCM cache.
     shutil.rmtree(run_dir, ignore_errors=True)
