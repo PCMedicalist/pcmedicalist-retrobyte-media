@@ -1,29 +1,9 @@
 #!/usr/bin/env python3
-"""
-RetroByte — "Discovering 90's Tech" video generator (HOST build step).
+"""RetroByte scheduled video: local diffusion still + animated avatar + Fenrir.
 
-Generates a VIRAL-STYLE narrated, multi-shot RetroByte video about a 90s tech
-artifact, then stages it for the in-container retrobyte-cron poster to publish
-to X / IG / TikTok.
-
-Pipeline (upgraded 2026-09-22):
-  1. Pick a never-before-used subject from the fresh topic queue.
-  2. Narrate it in RetroByte voice via the local retrobyte:3b Ollama model.
-  3. Build a 3-BEAT montage (NOT a frozen still):
-       beat 1 = HOOK card (bold subject + curiosity line, period CRT backdrop)
-       beat 2 = ARTIFACT hero (locally cached artifact photo when available)
-       beat 3 = REACTION/CTA (RetroByte large + sign-off + baseline.click)
-     Each beat gets a subtle Ken-Burns zoom so the clip has motion.
-  4. Mux the beats into one narrated MP4 via mux_video.mux_beats() (timed CC
-     burned across the whole timeline by media_clip's pipeline).
-  5. Stage mp4 + caption; write _discovery_ready.json for the poster.
-
-No more black-void single frames — every episode shows the real artifact and
-cuts between three distinct shots for retention/virality.
-
-Run from host (needs content-os venv: PIL; external local Kokoro model + system
-ffmpeg; Ollama retrobyte:3b). Invoked by a host cron at 11:00 + 20:00 (staggered away from
-PCMedicalist's GPU windows).
+The background stays fixed. Grounded narration uses the topic catalog; timed
+captions and the supplied keyed avatar are composed into a 1080x1920 video.
+--test-render exercises the production renderer without staging or state changes.
 """
 from __future__ import annotations
 
@@ -171,7 +151,7 @@ def load_episodes() -> list[tuple[str, str]]:
     return out
 
 
-def next_episode(slot: int, force: str | None = None, persist: bool = True):
+def next_episode(slot: int, force: str | None = None, persist: bool = True, allow_used: bool = False):
     eps = load_episodes()
     n = len(eps)
     st = _read_json_history(STATE_FILE)
@@ -187,7 +167,7 @@ def next_episode(slot: int, force: str | None = None, persist: bool = True):
                     if _topic_key(t) == _topic_key(force)), None)
         if idx is None:
             raise RuntimeError(f"Forced topic is not in the fresh catalog: {force}")
-        if _topic_key(eps[idx][0]) in posted:
+        if _topic_key(eps[idx][0]) in posted and not allow_used:
             raise RuntimeError(f"Topic was already used and cannot be repeated: {eps[idx][0]}")
     else:
         # If the previous attempt failed before staging, retry that same
@@ -254,52 +234,13 @@ def _fallback_narration(subject: str, hook: str, ep_idx: int) -> str:
 
 
 def narrate(subject: str, hook: str, ep_idx: int = 0) -> str:
-    recent = _recent_captions()
-    recent_block = "\n".join(f"- {x[:180]}" for x in recent)
-    fact_anchor = _FACT_ANCHORS.get(subject.upper())
-    prompt = (
-        "You are RetroByte, a curious AI intern from the PCMedicalist universe who "
-        "just time-traveled to the 1990s and is AMAZED by old technology. "
-        "Write a specific, fresh 2-sentence spoken narration (max 50 words) about "
-        f"\"{subject}\" ({hook}). Include one concrete reaction or observation. "
-        + (f"Verified fact to state accurately: {fact_anchor} " if fact_anchor else "")
-        + "Do not invent technical details or contradict supplied facts; if unsure, "
-        "react to the subject without adding a technical claim. "
-        "Vary the opening and sentence rhythm; avoid generic 'WAIT', 'NO WAY', "
-        "'I can't believe' openings and do not repeat recent wording. Plain text, "
-        "no hashtags or emojis. End naturally in RetroByte's voice."
-        + (f"\nRecent captions to avoid:\n{recent_block}" if recent_block else "")
-    )
-    try:
-        r = requests.post(
-            OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False,
-                  "temperature": 0.9, "keep_alive": 0},
-            timeout=90,
-        )
-        if r.ok:
-            t = r.json().get("response", "").strip()
-            t = re.sub(r"[#@]\w+", "", t)
-            t = "".join(ch for ch in t if ord(ch) < 0x2600)
-            t = " ".join(t.split()[:50]).strip()
-            if (subject.upper() == "THE DOT-MATRIX PRINTER" and re.search(
-                    r"\b(?:no|without|zero)\s+(?:any\s+)?(?:electricity|power)\b|"
-                    r"\b(?:doesn't|does not)\s+(?:need|use|require)\s+(?:any\s+)?"
-                    r"(?:electricity|power)\b", t, re.I)):
-                print("[discovery-gen] contradicted printer power fact; using grounded local fallback",
-                      file=sys.stderr)
-                return _fallback_narration(subject, hook, ep_idx)
-            norm = set(re.findall(r"[a-z]{3,}", t.lower()))
-            for prior in recent:
-                prev = set(re.findall(r"[a-z]{3,}", prior.lower()))
-                if norm and prev and len(norm & prev) / len(norm | prev) >= 0.72:
-                    print("[discovery-gen] narration too similar to recent caption; using local varied fallback",
-                          file=sys.stderr)
-                    return _fallback_narration(subject, hook, ep_idx)
-            return t or _fallback_narration(subject, hook, ep_idx)
-    except Exception as e:
-        print(f"[discovery-gen] narrate fail: {e}", file=sys.stderr)
-    return _fallback_narration(subject, hook, ep_idx)
+    """Keep speech grounded in the catalog instead of allowing topic drift."""
+    if _topic_key(subject) == "palmpilot":
+        return ("Before smartphones, your calendar had a stylus. This is the PalmPilot: "
+                "appointments and notes, right in your pocket. RetroByte wants to know: "
+                "would you use one today?")
+    fact = _FACT_ANCHORS.get(subject.upper(), hook).rstrip(".!?")
+    return f"Meet {subject.removeprefix('The ')}. {fact}. RetroByte wants to know: would you use one today?"
 
 
 def synthesize_local_voice(text: str, out_path: Path) -> dict:
@@ -817,7 +758,7 @@ def main():
 
     subject, hook, ep_idx = next_episode(
         args.slot, args.force_subject,
-        persist=not (args.dry_run or args.test_render))
+        persist=not (args.dry_run or args.test_render), allow_used=args.test_render)
     print(f"[discovery-gen] episode#{ep_idx + 1} subject={subject} slot={args.slot}",
           flush=True)
 
@@ -826,69 +767,44 @@ def main():
     stamp = f"{_run_stamp}-d{args.slot}-{_subject_slug}"
     run_dir = OUTBOX / stamp
     run_dir.mkdir(parents=True, exist_ok=False)
-    cleanup_run_dir = lambda: shutil.rmtree(run_dir, ignore_errors=True)
-    # Failed runs retain their logs and intermediate media for diagnosis.
-    f_hook = run_dir / f"disc_frame_{stamp}_hook.png"
-    f_art = run_dir / f"disc_frame_{stamp}_art.png"
-    f_react = run_dir / f"disc_frame_{stamp}_react.png"
+    # Failed runs and review previews retain their evidence on PCM.
     video = run_dir / f"disc_video_{stamp}.mp4"
-
     narration = narrate(subject, hook, ep_idx)
     (run_dir / "narration.txt").write_text(narration, encoding="utf-8")
     print(f"[discovery-gen] narration: {narration}", flush=True)
-
-    # Rotating cast + room: episode index drives both picks (deterministic).
-    _char_p = episode_character(ep_idx)
-    _bg_p = episode_background(ep_idx)
-    print(f"[discovery-gen] cast={_char_p.name if _char_p else 'legacy'} "
-          f"room={_bg_p.name if _bg_p else 'gradient'}", flush=True)
-
-    make_hook_frame(subject, hook, f_hook, ep_idx=ep_idx)
-    make_artifact_frame(subject, f_art, ep_idx=ep_idx)
-    make_reaction_frame(subject, f_react, ep_idx=ep_idx)
-    frames = [f_hook, f_art, f_react]
-
-    if args.dry_run or args.test_render:
-        print(f"[discovery-gen] {'TEST' if args.test_render else 'DRY'}-RUN: "
-              f"frames={[f.name for f in frames]} (video not built)")
-        if args.test_render:
-            # still build a sample for visual QA
-            pipelines = Path("/home/pcmedicalist/.hermes/skills/social-media/"
-                             "pcmedicalist-social-publisher/pipelines")
-            sys.path.insert(0, str(pipelines))
-            mp3 = run_dir / f"disc_video_{stamp}.mp3"
-            vr = synthesize_local_voice(narration, mp3)
-            if vr.get("ok"):
-                build_montage(narration, frames, mp3, video)
-                if video.is_file():
-                    print(f"[discovery-gen] TEST VIDEO: {video}")
-                    # Keep an explicit test-render preview for operator review.
-                    atexit.unregister(cleanup_run_dir)
-        elif args.dry_run:
-            shutil.rmtree(run_dir, ignore_errors=True)
+    if args.dry_run:
+        print("[discovery-gen] dry-run: stationary local diffusion scene + animated avatar + Fenrir + captions")
         return
-
-    mp3 = run_dir / f"disc_video_{stamp}.mp3"
-    vr = synthesize_local_voice(narration, mp3)
-    if not vr.get("ok") or not mp3.exists():
-        print(f"[discovery-gen] TTS FAILED — not staging: {vr.get('error')}", file=sys.stderr)
-        sys.exit(1)
-
-    video_path = generate_t2v_clip(narration, subject, video)
-    if not video_path:
-        raise RuntimeError("Local T2VZ generation failed or missed platform quality minimums; refusing a lower-fidelity montage fallback.")
-    else:
-        muxed = video.with_name(video.stem + "_narrated.mp4")
-        muxed_path = mux_audio_cc(Path(video_path), mp3, narration, muxed)
-        if not muxed_path:
-            raise RuntimeError("Narration mux failed; refusing a silent or truncated clip.")
-        branded = video.with_name(video.stem + "_brand.mp4")
-        video_path = brand_overlay(Path(muxed_path), branded, ep_idx=ep_idx)
-        if not video_path:
-            raise RuntimeError("Approved avatar overlay failed; refusing unbranded output.")
-    if not video_path or not Path(video_path).exists():
-        print("[discovery-gen] video build FAILED — not staging", file=sys.stderr)
-        sys.exit(1)
+    scene = run_dir / "diffusion-scene.png"
+    log_path = run_dir / "diffusion.log"
+    scene_script = HERE / "retrobyte_still_scene.py"
+    print(f"[discovery-gen] generating a stationary diffusion scene; log={log_path}", flush=True)
+    with log_path.open("w") as log:
+        generated = subprocess.run(
+            [sys.executable, str(scene_script), "--subject", subject, "--angle", hook,
+             "--out", str(scene)], stdout=log, stderr=subprocess.STDOUT, timeout=600)
+    if generated.returncode or not scene.is_file():
+        raise RuntimeError(f"Stationary diffusion failed: {log_path.read_text()[-2000:]}")
+    mp3 = run_dir / "narration.mp3"
+    print("[discovery-gen] synthesizing approved local Fenrir narration", flush=True)
+    voice = synthesize_local_voice(narration, mp3)
+    if not voice.get("ok"):
+        raise RuntimeError(f"Local Fenrir voice failed: {voice.get('error')}")
+    from retrobyte_still_video import render
+    print("[discovery-gen] rendering fixed scene + animated avatar + timed captions", flush=True)
+    provenance = render(scene, mp3, episode_character(ep_idx), subject, hook, narration, video)
+    provenance.update({"subject": subject, "narration": narration, "voice": voice.get("voice"),
+                       "avatar_source": str(episode_character(ep_idx)),
+                       "avatar_sha256": hashlib.sha256(episode_character(ep_idx).read_bytes()).hexdigest(),
+                       "social_post_sent": False})
+    (run_dir / "render.json").write_text(json.dumps(provenance, indent=2))
+    if not _probe_ok_for_reels(video):
+        raise RuntimeError("Completed video failed platform media validation")
+    if args.test_render:
+        print(f"[discovery-gen] REVIEW VIDEO: {video}", flush=True)
+        print(f"[discovery-gen] REVIEW REPORT: {run_dir / 'render.json'}", flush=True)
+        return
+    video_path = str(video)
 
     repo_media = HERE / "media"
     repo_media.mkdir(parents=True, exist_ok=True)
@@ -918,13 +834,16 @@ def main():
              "avatar_source": str(episode_character(ep_idx)),
              "avatar_sha256": hashlib.sha256(episode_character(ep_idx).read_bytes()).hexdigest(),
              "avatar_green_screen_removed": True,
+             "scene_mode": "stationary_local_diffusion",
+             "scene_sha256": provenance["scene_sha256"],
+             "captions_burned": True,
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
     record_posted(subject, args.slot, dest.name)
     audit_dir = HERE / "audit" / stamp
     audit_dir.mkdir(parents=True, exist_ok=True)
     (audit_dir / "generation.json").write_text(json.dumps(ready, indent=2))
-    for evidence in list(run_dir.glob("*.log")) + list(run_dir.glob("*.txt")):
+    for evidence in list(run_dir.glob("*.log")) + list(run_dir.glob("*.txt")) + list(run_dir.glob("*.json")):
         shutil.copy2(evidence, audit_dir / evidence.name)
     # The published MP4 now lives in this repo's media/ directory. Remove only
     # this run's temporary frames, audio, and diffusion files from PCM cache.

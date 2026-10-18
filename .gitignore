@@ -18,3 +18,13 @@
 # Offline regression coverage for scheduled video generation.
 !tests/
 !tests/test_generation_media.py
+
+# Stationary diffusion renderer and its regression coverage.
+!retrobyte_still_scene.py
+!retrobyte_still_video.py
+!tests/test_still_video.py
+!STILL_VIDEO_PIPELINE.md
+
+# Review media is separate from the social poster input directory.
+!reviews/
+!reviews/retrobyte-palmpilot-still-review-20261018.mp4
