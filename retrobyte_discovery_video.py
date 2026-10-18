@@ -31,6 +31,7 @@ import argparse
 import atexit
 import datetime as _dt
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -393,7 +394,8 @@ def _rotating_asset(directory: Path, idx: int) -> Path:
 
 
 def episode_character(ep_idx: int) -> Path:
-    return _rotating_asset(AGENTS_DIR, ep_idx)
+    return Path(os.environ.get("RETROBYTE_VIDEO_AVATAR",
+        "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/retrobyte-video-avatar.mp4"))
 
 
 def episode_background(ep_idx: int) -> Path:
@@ -401,15 +403,17 @@ def episode_background(ep_idx: int) -> Path:
 
 
 def _load_char_rgba(ep_idx: int) -> "Image.Image":
-    """Load the episode's agent sprite as RGBA (transparent foreground)."""
-    p = episode_character(ep_idx)
-    if not p.exists():
-        raise FileNotFoundError(f"Required RetroByte character sprite missing: {p}")
-    try:
-        c = __import__("PIL").Image.open(p).convert("RGBA")
-        return c
-    except Exception as exc:
-        raise RuntimeError(f"Cannot load RetroByte character sprite {p}: {exc}") from exc
+    """Use a keyed frame of the approved video for still-card previews."""
+    import io
+    from PIL import Image
+    sys.path.insert(0, "/home/pcmedicalist/pcmedicalist/pcmedicalist-content-os")
+    from generators.video_avatar import prepare_avatar
+    keyed, bbox = prepare_avatar(episode_character(ep_idx))
+    frame = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(keyed), "-frames:v", "1",
+         "-f", "image2pipe", "-vcodec", "png", "-"],
+        capture_output=True, check=True, timeout=30)
+    return Image.open(io.BytesIO(frame.stdout)).convert("RGBA").crop(bbox)
 
 
 def _paste_char(img, scale=0.55, cy_frac=0.60, ep_idx: int | None = None,
@@ -420,12 +424,7 @@ def _paste_char(img, scale=0.55, cy_frac=0.60, ep_idx: int | None = None,
     bottom_center=True anchors the sprite centered at the bottom band.
     lift_px raises the sprite off the bottom edge (keeps CTA visible).
     """
-    if ep_idx is not None:
-        char = _load_char_rgba(ep_idx)
-    else:
-        if not CHARACTER_IMG.is_file():
-            raise FileNotFoundError(f"Required RetroByte character image missing: {CHARACTER_IMG}")
-        char = __import__("PIL").Image.open(CHARACTER_IMG).convert("RGBA")
+    char = _load_char_rgba(ep_idx or 0)
     W, H = img.size
     target = int(W * scale)
     try:
@@ -662,8 +661,8 @@ def _probe_ok_for_reels(path: Path) -> bool:
 def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | None:
     """Generate REAL motion video via the sovereign T2VZ wrapper (no pan/still).
 
-    The narration becomes the video prompt so RetroByte + the gadget are
-    generated as genuine diffusion motion. Returns the clip path or None.
+    Generate gadget motion with space for the separately keyed approved
+    avatar. Returns the clip path or None.
 
     Output must meet Instagram Reels + TikTok minimums (>=3s, >=23fps,
     >=360px height) or we fall back to the still-frame montage path, which
@@ -671,12 +670,12 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
     produced a 1s clip that Reels/TikTok both rejected.
     """
     from PIL import Image
-    # Build a RetroByte-flavored T2V prompt from the narration + subject.
-    detail = re.sub(r"\s+", " ", narration).strip()[:220]
+    # Generate only the gadget; the approved video supplies the mascot.
     prompt = (
-        f"retro 1990s nostalgia animation, a cute CRT-TV-headed robot with glowing "
-        f"blue pixel eyes discovers an old {subject.lower()}, wide-eyed amazement, "
-        f"visual moment: {detail}, reaches out to touch it, warm amber lighting, "
+        f"retro 1990s nostalgia animation, product close-up of an old {subject.lower()}, "
+        f"the gadget is the only subject, no characters, no robots, no people, "
+        f"gadget on the right, clear lower-left space for a separate mascot overlay, "
+        f"warm amber lighting, "
         f"vaporwave palette, "
         f"smooth motion, hand-drawn cartoon style"
     )
@@ -712,34 +711,25 @@ def generate_t2v_clip(narration: str, subject: str, out_path: Path) -> str | Non
 
 def brand_overlay(clip_path: Path, out_path: Path,
                   ep_idx: int | None = None) -> str | None:
-    """Composite the episode's cast sprite over the T2VZ motion clip.
-
-    T2VZ cannot hold a consistent character (recipe gotcha: generates generic
-    objects). We overlay the actual agent PNG (transparent RGBA) so the video
-    is always on-brand, while the underlying clip provides gadget motion.
-    Sprite sits lower-left. ep_idx=None falls back to legacy CHARACTER_IMG.
-    Uses the robust two-input -filter_complex form (the movie= form is fragile).
-    """
-    ffmpeg = shutil.which("ffmpeg")
-    char = episode_character(ep_idx) if ep_idx is not None else None
-    if char is None or not char.exists():
-        char = CHARACTER_IMG
-    if not ffmpeg or not char.exists():
-        return None
+    """Loop the approved RetroByte MP4 in its own lower-left stage."""
+    sys.path.insert(0, "/home/pcmedicalist/pcmedicalist/pcmedicalist-content-os")
+    from generators.video_avatar import overlay_avatar
+    avatar = Path(os.environ.get(
+        "RETROBYTE_VIDEO_AVATAR",
+        "/home/pcmedicalist/pcmedicalist/pcmedicalist-retrobyte/images/brand/retrobyte-video-avatar.mp4"))
     try:
-        r = subprocess.run(
-            [ffmpeg, "-y", "-i", str(clip_path), "-i", str(char),
-             "-filter_complex",
-             "[1:v]scale=iw*0.52:-1[w];[0:v][w]overlay=W*0.04:H-h-(H*0.04)",
-             "-c:a", "copy", str(out_path)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-        if r.returncode == 0 and out_path.exists():
-            return str(out_path)
-        print(f"[discovery-gen] brand overlay fail: {(r.stderr or b'')[-300:].decode(errors='ignore')}",
-              file=sys.stderr)
-    except Exception as e:
-        print(f"[discovery-gen] brand overlay exc: {e}", file=sys.stderr)
-    return None
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", str(clip_path)],
+            capture_output=True, text=True, check=True)
+        stream = json.loads(probe.stdout)["streams"][0]
+        w, h = stream["width"], stream["height"]
+        box = (int(w * 0.05), int(h * 0.48), int(w * 0.40), int(h * 0.38))
+        overlay_avatar(clip_path, avatar, out_path, box)
+        return str(out_path)
+    except Exception as exc:
+        print(f"[discovery-gen] video avatar overlay failed: {exc}", file=sys.stderr)
+        return None
 
 
 def mux_audio_cc(clip_path: Path, audio_path: Path, script: str, out_path: Path) -> str | None:
@@ -917,7 +907,7 @@ def main():
     if not video_path:
         raise RuntimeError("Local T2VZ generation failed or missed platform quality minimums; refusing a lower-fidelity montage fallback.")
     else:
-        # Brand-lock: overlay real RetroByte mascot over the T2VZ motion.
+        # Brand-lock: loop the keyed approved avatar over gadget motion.
         branded = video.with_name(video.stem + "_brand.mp4")
         branded_path = brand_overlay(Path(video_path), branded, ep_idx=ep_idx)
         if branded_path:
@@ -960,6 +950,9 @@ def main():
         f"staged caption {len(caption)} chars exceeds {CAPTION_MAX}")
     ready = {"video": str(dest), "video_name": dest.name, "caption": caption,
              "subject": subject, "slot": args.slot,
+             "avatar_source": str(episode_character(ep_idx)),
+             "avatar_sha256": hashlib.sha256(episode_character(ep_idx).read_bytes()).hexdigest(),
+             "avatar_green_screen_removed": True,
              "ts": _dt.datetime.utcnow().isoformat() + "Z"}
     READY_FILE.write_text(json.dumps(ready, indent=2))
     record_posted(subject, args.slot, dest.name)
