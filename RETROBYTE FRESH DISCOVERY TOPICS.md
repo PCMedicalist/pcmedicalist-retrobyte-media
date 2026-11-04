@@ -90,3 +90,39 @@ Angle: A pocket keyboard and tiny screen looked up spellings without opening a p
 
 ## 29 — The Computer Game Strategy Guide
 Angle: A printed walkthrough mapped hidden rooms and puzzles beside the game it explained.
+
+## 30 — The Cassette Tape
+Angle: A small plastic shell held a ribbon of magnetic tape you could record over again and again.
+
+## 31 — The Rotary Dial Telephone
+Angle: Fingers found numbered holes and turned a dial to spin out each digit of a call.
+
+## 32 — The Floppy Disk Save Icon
+Angle: A tiny rectangle with a metal slider became the universal sign for keeping your work safe.
+
+## 33 — The Pager
+Angle: A pocket beeper buzzed with a short number so someone could reach you away from a phone.
+
+## 34 — The Dot Matrix Printer
+Angle: A row of pins struck an ink ribbon to print characters with a woven, textured look.
+
+## 35 — The Answering Machine
+Angle: A tape recorded a caller's voice when nobody was home and played it back with a beep.
+
+## 36 — The VHS Tape
+Angle: A fat cassette wound video past a spinning head to record and replay a whole movie.
+
+## 37 — The Modem Handshake
+Angle: Two computers screeched at each other over a phone line before data could finally flow.
+
+## 38 — The Camcorder
+Angle: A shoulder or hand-held recorder captured moving pictures and sound onto a tiny tape.
+
+## 39 — The PDA
+Angle: A pocket computer kept a calendar, contacts, and notes you could write on with a stylus.
+
+## 40 — The Cathode Ray Tube
+Angle: A deep glass funnel lit a glowing picture with a beam swept line by line across the screen.
+
+## 41 — The Computer Lab Mouse Ball
+Angle: A rubber ball rolled inside a mouse to translate a hand's motion into a moving pointer.
