@@ -1,11 +1,20 @@
 # RetroByte still-scene video pipeline
 
-The scheduled host build now generates one stationary local Stable Diffusion
-1.5 scene, then renders a vertical 1080×1920 video with the approved animated
-RetroByte MP4, local Kokoro `am_fenrir` narration, a title, and burned captions.
+The scheduled host build generates one stationary local Stable Diffusion 1.5
+atmosphere-only scene, then renders a vertical 1080×1920 video with the
+approved animated RetroByte MP4, local Kokoro `am_fenrir` narration, a title,
+and burned captions. This is the active production format; image-to-video
+generation remains a separate local experiment until its outputs pass the
+same identity, text, and format checks.
+The diffusion prompt never receives the product name or description. Product
+art is shown only when the topic has an explicit catalog mapping and a matching
+local cached reference with a matching SHA-256 and source entry in
+`<image-cache>/manifest.json`; otherwise the scene stays atmospheric rather than
+showing a fabricated cable, plug, port, or device. The selected reference path
+and SHA-256 are recorded and checked before staging and publishing.
 Only the avatar moves. The scene has no camera pan, zoom, video diffusion or
-motion loop. The avatar has its own stage below the device illustration and
-above the captions.
+motion loop. The avatar has its own stage below the subject visual and above
+the captions.
 
 Narration comes from the subject catalog's fact/angle, with a specific grounded
 PalmPilot script. The voice model and supplied avatar remain the same.
@@ -34,10 +43,29 @@ pixels, a stationary scene, moving avatar, and grounded narration. The generic
 media probe and narration-length regression remains in
 `tests/test_generation_media.py`.
 
-The PalmPilot hero is an interpretive PDA illustration drawn by the compositor,
-not a historical photograph. Diffusion generates the quiet desk atmosphere;
-it no longer invents a device or animation. This keeps the screen, handwriting
-area, application buttons and stylus readable.
+After a production video passes the final format gate, the successful build
+removes only legacy `generated/disc_frame_*.png` previews. It preserves source
+art, audit JSON/text evidence, and the final MP4 in `media/`. Failed builds do
+not run that cleanup.
+
+The diffusion model only creates the atmosphere. Product imagery is composited
+from an explicitly mapped local reference whose source and SHA-256 are checked;
+it is never inferred from a generated filename. If no verified reference is
+available, the subject-specific fallback illustration is used only for the
+PalmPilot. Other subjects remain atmosphere-only until their reference is
+approved. This keeps connector layouts, labels, and brand marks out of the
+diffusion model's control.
+
+## Local image-to-video experiments
+
+The attached cinematic clip is a style reference, not a factual source for
+product hardware or RetroByte identity. Any local video model must animate an
+atmosphere plate only. Titles, product references, RetroByte, narration, and
+captions remain separately composited from approved local assets. A candidate
+video must pass a manual review and the render checks before this profile or
+scheduled production is changed. Generated previews are retained until a final
+render succeeds; cleanup then removes only `generated/disc_frame_*.png` and
+preserves source art, audit evidence, and final media.
 
 ## Approved format lock: retrobyte-still-v1
 

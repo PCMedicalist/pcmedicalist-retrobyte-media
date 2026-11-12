@@ -20,7 +20,8 @@ class FormatContractTests(unittest.TestCase):
         return {'duration':10.224,'narration':script,'voice':'kokoro-onnx:am_fenrir',
                 'avatar_source':FORMAT['avatar']['path'],'avatar_sha256':FORMAT['avatar']['sha256'],
                 'avatar_box':FORMAT['avatar']['box'],'caption_box':FORMAT['captions']['box'],
-                'scene_mode':FORMAT['scene']['mode'],'caption_cues':cues}
+                'scene_mode':FORMAT['scene']['mode'],'subject_visual':'environment_only',
+                'caption_cues':cues}
 
     def test_approved_reference_passes_and_is_still_the_same_video(self):
         path=ROOT/FORMAT['approved_reference']['file']

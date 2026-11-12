@@ -41,7 +41,7 @@ def draw_pda(draw):
     draw.polygon([(786,1130),(801,1130),(794,1158)],fill=(170,182,191))
 
 
-def compose_frame(scene, subject, angle, output):
+def compose_frame(scene, subject, angle, output, subject_reference=None):
     canvas=Image.new('RGB',SIZE,tuple(FORMAT['colors']['background']));d=ImageDraw.Draw(canvas)
     amber=tuple(FORMAT['colors']['accent']);white=tuple(FORMAT['colors']['text']);blue=tuple(FORMAT['colors']['secondary'])
     d.text((70,110),FORMAT['copy']['header'],font=ImageFont.truetype(BOLD,35),fill=amber)
@@ -49,11 +49,26 @@ def compose_frame(scene, subject, angle, output):
     lines,title_px=title_layout(title)
     for i,line in enumerate(lines):
         d.text((64,180+i*86),line,font=ImageFont.truetype(BOLD,title_px),fill=white)
-    # One fixed image: never animate, translate, zoom, or loop its camera.
+    # Diffusion owns atmosphere only. A product image is used only if the
+    # topic resolver supplied a catalog-allowlisted local reference.
     im=Image.open(scene).convert('RGB').resize((800,800),Image.Resampling.LANCZOS)
+    subject_visual='environment_only'
+    subject_reference_sha256=None
+    if subject_reference is not None:
+        reference=Path(subject_reference)
+        if not reference.is_file():
+            raise FileNotFoundError(f'Approved subject reference is missing: {reference}')
+        import hashlib
+        subject_reference_sha256=hashlib.sha256(reference.read_bytes()).hexdigest()
+        product=Image.open(reference).convert('RGB')
+        product.thumbnail((760,700),Image.Resampling.LANCZOS)
+        card=Image.new('RGB',(800,800),(8,12,18))
+        card.paste(product,((800-product.width)//2,(800-product.height)//2))
+        im=card
+        subject_visual='allowlisted_local_reference'
     canvas.paste(im,(140,400));d=ImageDraw.Draw(canvas)
     d.rectangle((140,400,940,1200),outline=(63,81,103),width=3)
-    if 'palmpilot' in subject.casefold():
+    if 'palmpilot' in subject.casefold() and subject_reference is None:
         draw_pda(d)
     d.text((76,354),FORMAT['copy']['eyebrow'],font=ImageFont.truetype(FONT,26),fill=blue)
     d.text((72,1395),'Before smartphones…' if 'palmpilot' in subject.casefold() else 'Remember this?',font=ImageFont.truetype(BOLD,37),fill=amber)
@@ -63,7 +78,7 @@ def compose_frame(scene, subject, angle, output):
     d.rounded_rectangle(CAPTION_BOX,radius=16,fill=(25,31,44))
     d.text((70,1850),FORMAT['copy']['cta'],font=ImageFont.truetype(FONT,32),fill=blue)
     canvas.save(output)
-    return output
+    return output,subject_visual,subject_reference_sha256
 
 
 def caption_cues(script,duration):
@@ -80,9 +95,10 @@ def caption_cues(script,duration):
     return cues
 
 
-def render(scene,audio,avatar,subject,angle,narration,output):
+def render(scene,audio,avatar,subject,angle,narration,output,subject_reference=None):
     output=Path(output);frame=output.with_suffix('.png')
-    compose_frame(scene,subject,angle,frame)
+    _frame,subject_visual,subject_reference_sha256=compose_frame(
+        scene,subject,angle,frame,subject_reference=subject_reference)
     meta=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','json',str(audio)]))
     duration=float(meta['format']['duration'])
     cues=caption_cues(narration,duration)
@@ -98,4 +114,4 @@ def render(scene,audio,avatar,subject,angle,narration,output):
     if result.returncode:
         raise RuntimeError(result.stderr[-1600:])
     overlay_avatar(base,Path(avatar),output,AVATAR_BOX)
-    return {'path':str(output),'duration':duration,'scene_sha256':__import__('hashlib').sha256(Path(scene).read_bytes()).hexdigest(),'format_id':FORMAT['id'],'profile_sha256':PROFILE_SHA256,'scene_mode':FORMAT['scene']['mode'],'subject_visual':'interpretive_pda_illustration' if 'palmpilot' in subject.casefold() else 'diffusion_scene','avatar_box':AVATAR_BOX,'caption_box':CAPTION_BOX,'caption_cues':cues}
+    return {'path':str(output),'duration':duration,'scene_sha256':__import__('hashlib').sha256(Path(scene).read_bytes()).hexdigest(),'format_id':FORMAT['id'],'profile_sha256':PROFILE_SHA256,'scene_mode':FORMAT['scene']['mode'],'subject_visual':subject_visual,'subject_reference_path':str(subject_reference) if subject_reference is not None else None,'subject_reference_sha256':subject_reference_sha256,'avatar_box':AVATAR_BOX,'caption_box':CAPTION_BOX,'caption_cues':cues}

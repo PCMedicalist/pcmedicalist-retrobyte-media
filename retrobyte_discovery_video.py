@@ -76,11 +76,17 @@ def load_posted() -> set:
     posted = set()
     registry = _read_json_history(POSTED_REGISTRY)
     posted.update(_topic_key(x) for x in registry.get("titles", []))
+    # Titles promoted into the fresh catalog were produced as NEW episodes even
+    # when the legacy archive had covered the same subject. Counting the legacy
+    # copy would retire them forever and exhaust the fresh queue prematurely.
+    fresh_keys = {_topic_key(title) for title, _angle in load_episodes()}
     for legacy in SERIES_FILES:
         if legacy.exists():
             text = legacy.read_text(encoding="utf-8", errors="ignore")
-            posted.update(_topic_key(m.group(1)) for m in re.finditer(
-                r"^#+\s*\d{1,3}\s*[—-]\s*(.+)$", text, re.M))
+            for m in re.finditer(r"^#+\s*\d{1,3}\s*[—-]\s*(.+)$", text, re.M):
+                key = _topic_key(m.group(1))
+                if key and key not in fresh_keys:
+                    posted.add(key)
     publisher_state = _read_json_history(HERE / ".retrobyte_post_state.json")
     for value in publisher_state.get("posted_episodes", []):
         posted.add(_topic_key(value))
@@ -296,23 +302,44 @@ def synthesize_local_voice(text: str, out_path: Path) -> dict:
 
 # --- Wikimedia fetch (cached) ------------------------------------------
 def fetch_artifact(subject: str) -> Path | None:
-    """Return a locally cached artifact photo; never fetch media over network."""
+    """Return a source- and hash-verified local product image, if available."""
     key = subject.lower().strip()
     title = None
     for k, v in WIKIMEDIA_TITLES.items():
         if k in key or key in k:
             title = v; break
-    cache = IMG_CACHE / (re.sub(r"[^A-Za-z0-9]+", "_", key) + ".jpg")
-    if cache.exists():
-        return cache
-    # Historical cache naming may differ in capitalization/prefix. Match an
-    # already-local cached filename by normalized subject without network I/O.
-    normalized = re.sub(r"[^a-z0-9]+", "", re.sub(r"^the\s+", "", key))
-    for candidate in IMG_CACHE.glob("*"):
-        candidate_key = re.sub(r"[^a-z0-9]+", "", candidate.stem.lower())
-        if candidate_key == normalized or candidate_key.endswith(normalized):
-            return candidate
-    return None
+    # A matching filename alone is not enough to identify the pictured item.
+    # Require an explicit subject mapping before consulting the local cache.
+    if title is None:
+        return None
+    manifest_path = IMG_CACHE / 'manifest.json'
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        entry = manifest.get('subjects', {}).get(key)
+        if not isinstance(entry, dict) or entry.get('source') != title:
+            return None
+        filename = str(entry.get('file', ''))
+        candidate = (IMG_CACHE / filename).resolve()
+        if candidate.parent != IMG_CACHE.resolve() or not candidate.is_file():
+            return None
+        expected = str(entry.get('sha256', '')).lower()
+        actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        return candidate if len(expected) == 64 and actual == expected else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def cleanup_stale_generated_images(generated_dir: Path | None = None) -> list[str]:
+    """Prune only legacy generated frame PNGs after a new video passes QA."""
+    directory = Path(generated_dir) if generated_dir else HERE / 'generated'
+    removed = []
+    if not directory.is_dir():
+        return removed
+    for path in sorted(directory.glob('disc_frame_*.png')):
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+            removed.append(path.name)
+    return removed
 
 
 # --- RetroByte character model ------------------------------------------
@@ -793,7 +820,9 @@ def main():
         raise RuntimeError(f"Local Fenrir voice failed: {voice.get('error')}")
     from retrobyte_still_video import render
     print("[discovery-gen] rendering fixed scene + animated avatar + timed captions", flush=True)
-    provenance = render(scene, mp3, episode_character(ep_idx), subject, hook, narration, video)
+    subject_reference = fetch_artifact(subject)
+    provenance = render(scene, mp3, episode_character(ep_idx), subject, hook,
+                        narration, video, subject_reference=subject_reference)
     provenance.update({"subject": subject, "narration": narration, "voice": voice.get("voice"),
                        "avatar_source": str(episode_character(ep_idx)),
                        "avatar_sha256": hashlib.sha256(episode_character(ep_idx).read_bytes()).hexdigest(),
@@ -840,6 +869,9 @@ def main():
              "avatar_green_screen_removed": True,
              "scene_mode": "stationary_local_diffusion",
              "scene_sha256": provenance["scene_sha256"],
+             "subject_visual": provenance["subject_visual"],
+             "subject_reference_path": provenance["subject_reference_path"],
+             "subject_reference_sha256": provenance["subject_reference_sha256"],
              "captions_burned": True,
              "voice": provenance["voice"],
              "format_validation": provenance["format_validation"],
@@ -854,6 +886,10 @@ def main():
     # The published MP4 now lives in this repo's media/ directory. Remove only
     # this run's temporary frames, audio, and diffusion files from PCM cache.
     shutil.rmtree(run_dir, ignore_errors=True)
+    removed_images = cleanup_stale_generated_images()
+    if removed_images:
+        print("[discovery-gen] cleaned legacy generated previews after final compile: "
+              + ", ".join(removed_images), flush=True)
 
     # ---- Persist staged media to the git remote so raw.githubusercontent.com
     #      can serve it to Buffer's shareNow. Without this the video exists

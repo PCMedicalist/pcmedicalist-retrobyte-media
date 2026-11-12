@@ -74,6 +74,16 @@ def validate_render(video, provenance):
         raise ValueError('Approved local Fenrir narration is required')
     if provenance.get('scene_mode') != FORMAT['scene']['mode']:
         raise ValueError('A stationary local diffusion scene is required')
+    reference_path = provenance.get('subject_reference_path')
+    reference_hash = provenance.get('subject_reference_sha256')
+    if reference_path:
+        ref = Path(reference_path)
+        if not ref.is_file() or file_hash(ref) != reference_hash:
+            raise ValueError('Subject reference is missing or changed after composition')
+        if provenance.get('subject_visual') != 'allowlisted_local_reference':
+            raise ValueError('Subject image must come from an allowlisted local reference')
+    elif provenance.get('subject_visual') not in (None, 'environment_only'):
+        raise ValueError('Unverified generated product imagery is not allowed')
     avatar = Path(provenance.get('avatar_source', ''))
     if not avatar.is_file() or file_hash(avatar) != FORMAT['avatar']['sha256']:
         raise ValueError('The approved animated RetroByte avatar is required')
@@ -141,4 +151,13 @@ def validate_publish_manifest(manifest):
         raise ValueError('Approved avatar and Fenrir voice are mandatory')
     if manifest.get('scene_mode') != FORMAT['scene']['mode'] or manifest.get('captions_burned') is not True:
         raise ValueError('Fixed background and burned captions are mandatory')
+    reference_path = manifest.get('subject_reference_path')
+    if reference_path:
+        ref = Path(reference_path)
+        if not ref.is_file() or file_hash(ref) != manifest.get('subject_reference_sha256'):
+            raise ValueError('Published subject reference is missing or changed')
+        if manifest.get('subject_visual') != 'allowlisted_local_reference':
+            raise ValueError('Published subject image must come from an allowlisted local reference')
+    elif manifest.get('subject_visual') not in (None, 'environment_only'):
+        raise ValueError('Publishing an unverified generated product image is not allowed')
     return qa

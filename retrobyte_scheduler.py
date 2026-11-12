@@ -20,9 +20,11 @@ Env:
   RETROBYTE_SCHEDULER_TZ   optional; uses system local time (container TZ).
 """
 import datetime
+import http.server
 import os
 import subprocess
 import sys
+import threading
 import time
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +39,26 @@ SLOTS = [
 # Track last-fired date per slot so we don't double-fire if the loop wakes
 # multiple times within the same minute window.
 LAST_FIRED = {slot: None for _, _, slot in SLOTS}
+_LAST_HEARTBEAT = time.monotonic()
+
+
+class _ReadyHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/readyz":
+            self.send_error(404)
+            return
+        ready = time.monotonic() - _LAST_HEARTBEAT <= 90
+        self.send_response(200 if ready else 503)
+        self.end_headers()
+        self.wfile.write(b"ready\n" if ready else b"stale\n")
+
+    def log_message(self, _format, *_args):
+        return
+
+
+def start_readyz_server():
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", 8080), _ReadyHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
 def seconds_until_next(target_h, target_m):
@@ -64,10 +86,13 @@ def run_poster(slot):
 
 
 def main():
+    global _LAST_HEARTBEAT
+    start_readyz_server()
     print(f"[{datetime.datetime.now().isoformat()}] retrobyte_scheduler started; "
           f"slots={[(h,m,s) for h,m,s in SLOTS]}", flush=True)
     # Coarse 30s poll loop — cheap, no cron needed.
     while True:
+        _LAST_HEARTBEAT = time.monotonic()
         now = datetime.datetime.now()
         for h, m, slot in SLOTS:
             if now.hour == h and now.minute == m:

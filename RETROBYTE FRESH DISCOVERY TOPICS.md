@@ -126,3 +126,66 @@ Angle: A deep glass funnel lit a glowing picture with a beam swept line by line 
 
 ## 41 — The Computer Lab Mouse Ball
 Angle: A rubber ball rolled inside a mouse to translate a hand's motion into a moving pointer.
+
+## 42 — The Zip Drive
+Angle: A chunky removable cartridge held far more files than a floppy and clicked satisfyingly into its drive.
+
+## 43 — The Portable CD Player
+Angle: A handheld disc spinner brought album sound on the go, skipping when the road got bumpy.
+
+## 44 — The Fax Machine
+Angle: A phone-line printer scanned a page and sent it across the world as a slow, squealing copy.
+
+## 45 — The Computer Microphone
+Angle: A small desktop mic let you record voice and speech into a machine that could finally hear you.
+
+## 46 — The TV Antenna Rotator
+Angle: A roof antenna turned toward a distant tower with a click so a picture could come in clear.
+
+## 47 — The Overhead Projector
+Angle: A bright lamp and mirror threw a hand-written transparency onto the wall for the whole room.
+
+## 48 — The Slide Rule
+Angle: Sliding scales multiplied and divided with a cursor before calculators fit in a pocket.
+
+## 49 — The Computer Fan Grill
+Angle: A perforated metal cover kept dust out and let the whirring fan cool a humming tower.
+
+## 50 — The Audio Mixing Board
+Angle: Rows of sliders and knobs blended microphones and instruments into one balanced track.
+
+## 51 — The Television Channel Knob
+Angle: A rotary selector clicked through a handful of channels, each one a different world.
+
+## 52 — The Dot Matrix Fanfold Paper
+Angle: Perforated sheets fed through a printer in a continuous stack, tearing apart along the edges.
+
+## 53 — The Video Game Arcade Stick
+Angle: A chunky joystick and buttons let players fight and race in an upright cabinet.
+
+## 54 — The Cassette Single
+Angle: A small tape held one song on each side, sold cheap for fans who wanted a single hit.
+
+## 55 — The Computer Password Notebook
+Angle: A handwritten list of logins lived beside the desk because remembering them all was impossible.
+
+## 56 — The Answering Machine Outgoing Message
+Angle: A recorded greeting told callers to leave their name and number after the tone.
+
+## 57 — The Desktop Computer Speaker
+Angle: A small box beside the monitor beeped and booped with system sounds and game music.
+
+## 58 — The Radio Cassette Player
+Angle: A boombox carried radio and tape together, with a handle for taking sound anywhere.
+
+## 59 — The Scanner Glass Bed
+Angle: A flat glass panel held photos and documents face-down so a light bar could digitize them.
+
+## 60 — The 3D Glasses With Red And Blue Lenses
+Angle: Two colored lenses split a picture so each eye saw a slightly different view and depth appeared.
+
+## 61 — The Computer Lab Chairs
+Angle: Adjustable stools lined up in rows before a wall of beige machines and glowing monitors.
+
+## 62 — The Telephone Answering Cord
+Angle: A coiled cable stretched from handset to base, tangling and stretching with every call.
