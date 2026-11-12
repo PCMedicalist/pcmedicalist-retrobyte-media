@@ -34,3 +34,10 @@
 !retrobyte_video_format.py
 !tests/test_video_format.py
 !AGENTS.md
+
+# Subject-image cache population (Wikimedia Commons) + output-quality plan.
+# The cache itself lives on the PCM drive, never in this repo.
+!populate_subject_cache.py
+!fix_subject_images.py
+!fix_subject_images_pass2.py
+!OUTPUT_QUALITY_PLAN.md

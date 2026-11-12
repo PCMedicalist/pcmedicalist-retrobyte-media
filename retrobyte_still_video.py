@@ -82,11 +82,34 @@ def compose_frame(scene, subject, angle, output, subject_reference=None):
 
 
 def caption_cues(script,duration):
+    """Time caption cues that break on sentence/clause boundaries.
+
+    A hard N-word split cuts mid-sentence ("Meet Zip Drive. A chunky") which
+    reads as truncated. Instead: accumulate words up to max_words_per_cue and
+    break after the last punctuation mark within that window, so each cue ends
+    on a clause/sentence boundary and the caption reads as complete phrases.
+    """
+    import re
     words=script.split()
     if not words or duration <= 0:
         raise ValueError('Complete narration is required for burned captions')
     limit=FORMAT['captions']['max_words_per_cue']
-    groups=[' '.join(words[i:i+limit]) for i in range(0,len(words),limit)]
+    groups=[];current=[];last_break=-1
+    for i,word in enumerate(words):
+        current.append(word)
+        if re.search(r'[.!?,;:]$',word):
+            last_break=len(current)
+        if len(current)>=limit:
+            if last_break>0:
+                # break at the punctuation inside this window
+                groups.append(' '.join(current[:last_break]))
+                current=current[last_break:]
+                last_break=-1
+            else:
+                groups.append(' '.join(current))
+                current=[]
+    if current:
+        groups.append(' '.join(current))
     cues=[];offset=0
     for group in groups:
         count=len(group.split());end=offset+count

@@ -84,6 +84,17 @@ def validate_render(video, provenance):
             raise ValueError('Subject image must come from an allowlisted local reference')
     elif provenance.get('subject_visual') not in (None, 'environment_only'):
         raise ValueError('Unverified generated product imagery is not allowed')
+    # Coverage metric (not a gate): record whether a real subject image was used
+    # versus the generic atmosphere scene, so the output-quality trend is
+    # measurable. A subject with a cache mapping but an environment_only render
+    # is a missed opportunity, not a format violation.
+    subject = str(provenance.get('subject') or '')
+    coverage = {
+        'subject': subject,
+        'used_subject_image': bool(reference_path),
+        'subject_visual': provenance.get('subject_visual') or 'environment_only',
+    }
+    provenance['subject_coverage'] = coverage
     avatar = Path(provenance.get('avatar_source', ''))
     if not avatar.is_file() or file_hash(avatar) != FORMAT['avatar']['sha256']:
         raise ValueError('The approved animated RetroByte avatar is required')
