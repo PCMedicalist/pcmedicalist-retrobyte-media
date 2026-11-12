@@ -2,6 +2,20 @@
 
 Session: 2026-11-12 · Agent: PCMedicalist · Scope: video quality on socials + Docker deployment
 
+## EXECUTION LOG (what has been DONE, verified)
+
+- [x] **Subject imagery** — 70 Commons photos cached + manifest; `WIKIMEDIA_TITLES`
+  extended; 54/62 catalog subjects (87%) now show a REAL subject image instead of
+  the generic room. QA'd visually (contact sheet), 8 off-topic images replaced.
+- [x] **Caption truncation** — 5-word/2-line → clause-aware split + 10-word/3-line
+  policy (box measured at 160px = exactly 3 lines at 43px). Captions now break on
+  sentence/clause boundaries; pixel-measured inside the band.
+- [x] **Scene model level-up** — SD1.5 640px/28 → **SDXL base 832px/30**.
+  Measured: edge energy 33.8 vs 27.5; load 4.1s; generate 19.4s; peak VRAM 9.34GB.
+  1024px OOMs (11.5GB card, ~6GB held by chat models) → 832px is the max that fits.
+  Real E2E video verified: 832px SDXL scene + subject photo + captions in-band.
+- [x] **QA metric** — `validate_render()` records `subject_coverage`.
+
 ## TL;DR
 
 The videos are technically correct (1080×1920, 30fps, burned captions, approved avatar, local
