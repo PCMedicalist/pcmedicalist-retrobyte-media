@@ -11,9 +11,9 @@
   },
   "scene": {
     "mode": "stationary_local_diffusion",
-    "model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
-    "steps": 28,
-    "size": 640,
+    "model": "stabilityai/stable-diffusion-xl-base-1.0",
+    "steps": 30,
+    "size": 832,
     "box": [
       140,
       400,
