@@ -48,8 +48,8 @@
     "min_font_px": 32,
     "max_font_px": 43,
     "max_line_width": 900,
-    "max_lines": 2,
-    "max_words_per_cue": 5,
+    "max_lines": 3,
+    "max_words_per_cue": 10,
     "y": 1705
   },
   "copy": {
