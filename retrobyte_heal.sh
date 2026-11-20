@@ -66,7 +66,15 @@ http_code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 "$RAW_URL")
 if [ "$http_code" != "200" ]; then
   OWNER_ALERT "raw URL $http_code (expected 200) — pushing to GitHub (retry up to 2x)..."
   for i in 1 2; do
-    git -C "$REPO_DIR" push origin main 2>&1 | tail -2
+    # Capture the push exit code. Piping to `tail` discarded it, so a blocked
+    # push looked identical to a successful one — the reason the 2026-11-17..19
+    # author-gate block ran silently for 4 days while the episode looped.
+    _push_out=$(git -C "$REPO_DIR" push origin main 2>&1)
+    _push_rc=$?
+    printf '%s\n' "$_push_out" | tail -3
+    if [ "$_push_rc" -ne 0 ]; then
+      OWNER_ALERT "push attempt $i failed (rc=$_push_rc) — see message above."
+    fi
     sleep 5
     http_code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 "$RAW_URL")
     [ "$http_code" = "200" ] && break

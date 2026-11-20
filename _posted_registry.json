@@ -17,6 +17,7 @@
     "THE TAMAGOTCHI",
     "THE TRACKBALL",
     "THE WALKMAN",
+    "The 3D Glasses With Red And Blue Lenses",
     "The AOL Installation Disc",
     "The Answering Machine Outgoing Message",
     "The Audio Mixing Board",
@@ -74,9 +75,9 @@
   ],
   "cycle": 1,
   "last": {
-    "title": "The Scanner Glass Bed",
-    "slot": 1,
-    "file": "disc_video_2026-11-20T001142Z-d1-the-scanner-glass-bed.mp4",
-    "ts": "2026-11-20T00:13:07.972330Z"
+    "title": "The 3D Glasses With Red And Blue Lenses",
+    "slot": 0,
+    "file": "disc_video_2026-11-20T093032Z-d0-the-3d-glasses-with-red-and-blue-len.mp4",
+    "ts": "2026-11-20T09:31:20.005215Z"
   }
 }
