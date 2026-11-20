@@ -998,8 +998,19 @@ def main():
             _msg = (f"feat(discovery): {subject.lower()} — d{args.slot} narrated video "
                     f"({_dt.date.today().isoformat()})\n"
                     f"\nCo-Authored-By: PCMedicalist <noreply@pcmedicalist.com>")
+            # Pin the commit identity explicitly. The dual-account governance
+            # pre-push hook (Gate 3) blocks any push to github.com/PCMedicalist/*
+            # whose author is not "PCMedicalist <info@pcmedicalist.com>". This
+            # repo's media feeds that account, but the host's GLOBAL git identity
+            # was McIntoshiS — so every commit was mis-authored and EVERY push was
+            # blocked (2026-11-17..19: 6 videos stranded local, raw URLs 404, the
+            # poster aborted and RetroByte went silent for 4 days). Repo-local
+            # config alone is not enough: pin per-command so a global-config
+            # change can never silently re-break the pipeline.
             _rc = subprocess.run(
-                ["git", "commit", "-m", _msg],
+                ["git", "-c", "user.name=PCMedicalist",
+                 "-c", "user.email=info@pcmedicalist.com",
+                 "commit", "-m", _msg],
                 cwd=str(HERE), capture_output=True, text=True, timeout=60)
             if _rc.returncode != 0:
                 print(f"[discovery-gen] git commit failed: {_rc.stderr.strip()[-200:]}",
@@ -1015,8 +1026,13 @@ def main():
                 ["git", "push", "origin", "main"],
                 cwd=str(HERE), capture_output=True, text=True, timeout=120)
             if _pr.returncode != 0:
-                print(f"[discovery-gen] git push WARN (non-fatal): {_pr.stderr.strip()[-200:]}",
+                # Push failure is NOT cosmetic: an unpushed video 404s on the raw
+                # URL, so the poster aborts and RetroByte silently stops posting.
+                # Fail loudly (non-zero exit) so the cron surfaces it instead of
+                # staging a ready-file that can never be delivered.
+                print(f"[discovery-gen] git push FAILED (fatal): {_pr.stderr.strip()[-300:]}",
                       file=sys.stderr)
+                _ok = False
             else:
                 _ln = _pr.stdout.strip().splitlines()
                 print(f"[discovery-gen] pushed: {_ln[-1] if _ln else 'ok'}", flush=True)
@@ -1026,7 +1042,12 @@ def main():
 
     print(f"[discovery-gen] STAGED: {dest.name} | caption {len(caption)} chars",
           flush=True)
+    # Surface a failed persist as a non-zero exit. The staged ready-file is
+    # useless if the video never reached the raw URL, and a silent exit-0 is
+    # exactly how the 4-day dead-cycle hid. `git add` / `commit` / `push`
+    # failures all land here.
+    return 0 if _ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
