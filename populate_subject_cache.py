@@ -100,10 +100,21 @@ SUBJECT_QUERIES: dict[str, list[str]] = {
     "the pager": ["Motorola pager", "beeper pager"],
     "the vhs tape": ["VHS tape", "VHS cassette"],
     "the camcorder": ["camcorder", "video camcorder"],
+    # --- fresh catalog #63-#74 (2026-11-24): subjects with no good cached photo
+    "the game cartridge contact pins": ["Game Boy cartridge connector", "cartridge slot contacts"],
+    "the dip switch": ["DIP switch", "dual in-line package switch circuit board"],
+    # "telephone line splitter" and "ethernet crossover cable" return irrelevant
+    # covers/plugs from Commons search; pinned to exact Commons file titles.
+    "the telephone line splitter": ["File:Telephone line splitter.jpg", "telephone splitter RJ11"],
+    "the ethernet crossover cable": ["File:Crossover Adapter DSC01805.JPG", "ethernet crossover cable RJ45"],
 }
 
 # Subjects already verified to resolve (skip search, fetch directly).
-KNOWN_FILES: dict[str, str] = {}
+KNOWN_FILES: dict[str, str] = {
+    # Pinned exact Commons files — search ranks magazine covers / generic plugs.
+    "the telephone line splitter": "File:Adsl splitter n3.jpg",
+    "the ethernet crossover cable": "File:Crossover Adapter DSC01805.JPG",
+}
 
 
 def search(term: str) -> list[dict]:
@@ -166,14 +177,33 @@ def main() -> int:
                 continue
 
         chosen = None
-        for term in SUBJECT_QUERIES.get(subject, [subject]):
+        if subject in KNOWN_FILES:
+            title = KNOWN_FILES[subject]
+            url = ("https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode({
+                "action": "query", "format": "json", "titles": title,
+                "prop": "imageinfo", "iiprop": "url|sha1|size|mime",
+                "iiurlwidth": "1200"}))
             try:
-                chosen = best_candidate(search(term))
+                info = json.load(urllib.request.urlopen(
+                    urllib.request.Request(url, headers={"User-Agent": UA}), timeout=25))
+                pages = info.get("query", {}).get("pages", {})
+                for page in pages.values():
+                    if page.get("imageinfo"):
+                        chosen = {"title": page.get("title"), **page["imageinfo"][0]}
+                        break
+                if chosen is None:
+                    print(f"  FAIL  {subject}: pinned file {title} not found on Commons")
             except Exception as exc:
-                print(f"  ERR   search '{term}': {type(exc).__name__}")
-                continue
-            if chosen:
-                break
+                print(f"  ERR   pinned file '{title}': {type(exc).__name__}: {exc}")
+        if chosen is None:
+            for term in SUBJECT_QUERIES.get(subject, [subject]):
+                try:
+                    chosen = best_candidate(search(term))
+                except Exception as exc:
+                    print(f"  ERR   search '{term}': {type(exc).__name__}")
+                    continue
+                if chosen:
+                    break
         if not chosen:
             fail += 1
             print(f"  FAIL  {subject}: no suitable Commons image")

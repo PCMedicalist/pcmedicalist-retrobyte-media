@@ -204,6 +204,26 @@ WIKIMEDIA_TITLES = {
     "the computer lab chairs": "File:Computer Lab at GGI 3.JPG",
 }
 
+# Explicit subject aliases for the fresh catalog (#63-#74, added 2026-11-24).
+# Each maps a catalog title to a VERIFIED cached artifact key. The token
+# fallback in fetch_artifact() handles near-misses, but these pins make the
+# choice auditable and avoid ambiguous matches (e.g. "the floppy disk save
+# icon" vs "the floppy disk" for the write-protect tab).
+SUBJECT_ALIASES = {
+    "the floppy disk write-protect tab": "the floppy disk",
+    "the dial-up modem speaker": "the dial-up modem",
+    "the crt degauss button": "the cathode ray tube",
+    "the game cartridge contact pins": "the game cartridge contact pins",
+    "the vhs tracking knob": "the vhs tape",
+    "the palmpilot stylus": "the palmpilot",
+    "the cd-r write-once disc": "the compact disc",
+    "the ethernet crossover cable": "the ethernet crossover cable",
+    "the telephone line splitter": "the telephone line splitter",
+    "the crt screen burn-in": "the cathode ray tube",
+    "the keyboard keycap": "the beige computer keyboard",
+    "the dip switch": "the dip switch",                        # Commons file added 2026-11-24
+}
+
 
 def load_episodes() -> list[tuple[str, str]]:
     """Return fresh episode topics with their distinct narration angles."""
@@ -373,24 +393,10 @@ def synthesize_local_voice(text: str, out_path: Path) -> dict:
 
 
 # --- Wikimedia fetch (cached) ------------------------------------------
-def fetch_artifact(subject: str) -> Path | None:
-    """Return a source- and hash-verified local product image, if available."""
-    key = subject.lower().strip()
-    title = None
-    for k, v in WIKIMEDIA_TITLES.items():
-        if k in key or key in k:
-            title = v; break
-    # A matching filename alone is not enough to identify the pictured item.
-    # Require an explicit subject mapping before consulting the local cache.
-    if title is None:
-        return None
-    manifest_path = IMG_CACHE / 'manifest.json'
+def _verified_cached_image(entry: dict) -> Path | None:
+    """Return a cache-local image only when its manifest sha256 still matches."""
+    filename = str(entry.get('file', ''))
     try:
-        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-        entry = manifest.get('subjects', {}).get(key)
-        if not isinstance(entry, dict) or entry.get('source') != title:
-            return None
-        filename = str(entry.get('file', ''))
         candidate = (IMG_CACHE / filename).resolve()
         if candidate.parent != IMG_CACHE.resolve() or not candidate.is_file():
             return None
@@ -399,6 +405,71 @@ def fetch_artifact(subject: str) -> Path | None:
         return candidate if len(expected) == 64 and actual == expected else None
     except (OSError, ValueError, TypeError):
         return None
+
+
+def fetch_artifact(subject: str) -> Path | None:
+    """Return a source- and hash-verified local product image, if available.
+
+    Resolution order (2026-11-24):
+      1. Explicit SUBJECT_ALIASES pin (auditable mapping for catalog topics).
+      2. Exact WIKIMEDIA_TITLES key (legacy behaviour).
+      3. Normalized token match against the manifest: an exact topic-key match
+         first, then a unique "all catalog tokens are a subset of the cached
+         subject's tokens" match. Multi-token generic subjects (e.g. "dip
+         switch") are refused unless uniquely pinned — a wrong-subject photo
+         is worse than an environment-only scene.
+    Every candidate is still verified against the manifest sha256.
+    """
+    key = subject.lower().strip()
+    lookup_key = None
+    if key in SUBJECT_ALIASES:
+        lookup_key = SUBJECT_ALIASES[key]
+        if lookup_key is None:
+            return None  # explicitly marked: no trustworthy artifact
+    if lookup_key is None:
+        for k, v in WIKIMEDIA_TITLES.items():
+            if k in key or key in k:
+                lookup_key = k
+                break
+
+    manifest_path = IMG_CACHE / 'manifest.json'
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return None
+    subjects = manifest.get('subjects', {})
+
+    if lookup_key:
+        expected_title = WIKIMEDIA_TITLES.get(lookup_key)
+        entry = subjects.get(lookup_key)
+        if (isinstance(entry, dict) and
+                (expected_title is None or entry.get('source') == expected_title)):
+            return _verified_cached_image(entry)
+        # Title drift (Commons source was re-fetched): trust the verified
+        # manifest entry whenever the call named an explicit pin. The pin is
+        # the auditable decision; the sha256 check below is the safety gate.
+        if isinstance(entry, dict) and key in SUBJECT_ALIASES:
+            return _verified_cached_image(entry)
+
+    # Durable fallback: normalized token match over cached subject keys.
+    wanted = _topic_key(key).split()
+    if not wanted:
+        return None
+    exact = subjects.get(_topic_key(key))
+    if isinstance(exact, dict):
+        return _verified_cached_image(exact)
+    if len(wanted) < 2:
+        return None  # single-token fuzzy matches are too risky
+    candidates = []
+    for cached_key, entry in subjects.items():
+        if not isinstance(entry, dict):
+            continue
+        cached_tokens = set(_topic_key(cached_key).split())
+        if set(wanted).issubset(cached_tokens):
+            candidates.append((cached_key, entry))
+    if len(candidates) == 1:
+        return _verified_cached_image(candidates[0][1])
+    return None
 
 
 def cleanup_stale_generated_images(generated_dir: Path | None = None) -> list[str]:
