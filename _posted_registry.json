@@ -26,10 +26,12 @@
     "The CD-ROM Encyclopedia",
     "The Camcorder",
     "The Cassette Single",
+    "The Cassette Tape",
     "The Cathode Ray Tube",
     "The Computer Fan Grill",
     "The Computer Game Demo Disc",
     "The Computer Game Strategy Guide",
+    "The Computer Lab Chairs",
     "The Computer Lab Mouse Ball",
     "The Computer Microphone",
     "The Computer Microphone Port",
@@ -41,6 +43,7 @@
     "The Digital Photo Memory Card",
     "The Digital Voice Recorder",
     "The Dot Matrix Fanfold Paper",
+    "The Dot Matrix Printer",
     "The Electronic Dictionary",
     "The Fax Machine",
     "The Film Scanner",
@@ -64,6 +67,7 @@
     "The Shareware Registration Card",
     "The Slide Rule",
     "The TV Antenna Rotator",
+    "The Telephone Answering Cord",
     "The Television Channel Knob",
     "The Trackpoint Keyboard Nub",
     "The USB Flash Drive",
@@ -75,9 +79,9 @@
   ],
   "cycle": 1,
   "last": {
-    "title": "The 3D Glasses With Red And Blue Lenses",
-    "slot": 0,
-    "file": "disc_video_2026-11-20T093032Z-d0-the-3d-glasses-with-red-and-blue-len.mp4",
-    "ts": "2026-11-20T09:31:20.005215Z"
+    "title": "The Dot Matrix Printer",
+    "slot": 1,
+    "file": "disc_video_2026-11-22T001104Z-d1-the-dot-matrix-printer.mp4",
+    "ts": "2026-11-22T00:12:30.280394Z"
   }
 }

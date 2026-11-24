@@ -189,3 +189,39 @@ Angle: Adjustable stools lined up in rows before a wall of beige machines and gl
 
 ## 62 — The Telephone Answering Cord
 Angle: A coiled cable stretched from handset to base, tangling and stretching with every call.
+
+## 63 — The Floppy Disk Write-Protect Tab
+Angle: A tiny plastic slider could stop a disk from being overwritten when a file mattered too much to lose.
+
+## 64 — The Dial-Up Modem Speaker
+Angle: A little speaker let you hear the whole screeching handshake before the internet finally connected.
+
+## 65 — The CRT Degauss Button
+Angle: A button on old monitors cleared color blotches with a loud thunk and a wobble of the screen.
+
+## 66 — The Game Cartridge Contact Pins
+Angle: Gold contacts on the bottom of a cartridge carried the game, and a quick blow could fix a glitchy start.
+
+## 67 — The VHS Tracking Knob
+Angle: A dial on the player could chase away the snowy stripes rolling through a worn rented tape.
+
+## 68 — The PalmPilot Stylus
+Angle: A slim plastic pen tapped tiny icons on a grayscale screen and tucked neatly into the case.
+
+## 69 — The CD-R Write-Once Disc
+Angle: A blank disc you could burn a mix onto once, then never change a single track again.
+
+## 70 — The Ethernet Crossover Cable
+Angle: A special cable with swapped wires let two computers talk directly without a hub between them.
+
+## 71 — The Telephone Line Splitter
+Angle: A cheap adapter let the phone and the modem share one wall jack without cutting the other off.
+
+## 72 — The CRT Screen Burn-In
+Angle: Leave a static screen on too long and its ghost stayed burned into the glass forever.
+
+## 73 — The Keyboard Keycap
+Angle: A single square cap could be pried off and swapped when the letter on top finally wore away.
+
+## 74 — The DIP Switch
+Angle: A row of tiny switches on a circuit board set hardware options before software could do it for you.
